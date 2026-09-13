@@ -48,7 +48,7 @@ const (
 	containerStatusTerminated = "terminated"
 	containerStatusWaiting    = "waiting"
 
-	workloadColumns = `id, runner_id, thread_id, agent_id, organization_id, status, agent_state, failure_reason, failure_message, containers, ziti_identity_id, allocated_cpu_millicores, allocated_ram_bytes, flavor, persistent_shells, instance_id, last_activity_at, last_metering_sampled_at, removed_at, owner_kind, owner_id, created_at, updated_at`
+	workloadColumns = `id, runner_id, thread_id, agent_id, organization_id, status, agent_state, failure_reason, failure_message, containers, ziti_identity_id, allocated_cpu_millicores, allocated_ram_bytes, flavor, persistent_shells, instance_id, last_activity_at, last_metering_sampled_at, removed_at, owner_kind, owner_id, created_at, updated_at, removal_confirmed_at`
 )
 
 type workloadRecord struct {
@@ -70,6 +70,7 @@ type workloadRecord struct {
 	InstanceID             *string
 	LastActivityAt         time.Time
 	RemovedAt              *time.Time
+	RemovalConfirmedAt     *time.Time
 	LastMeteringAt         *time.Time
 	OwnerKind              string
 	OwnerID                uuid.UUID
@@ -93,15 +94,16 @@ type workloadInsertInput struct {
 }
 
 type workloadUpdateInput struct {
-	ID                uuid.UUID
-	Status            *string
-	FailureReason     *string
-	FailureMessage    *string
-	ContainersJSON    *[]byte
-	InstanceID        *string
-	RemovedAt         *time.Time
-	LastMeteringAt    *time.Time
-	ResetLastActivity bool
+	ID                 uuid.UUID
+	Status             *string
+	FailureReason      *string
+	FailureMessage     *string
+	ContainersJSON     *[]byte
+	InstanceID         *string
+	RemovedAt          *time.Time
+	RemovalConfirmedAt *time.Time
+	LastMeteringAt     *time.Time
+	ResetLastActivity  bool
 }
 
 type workloadListFilter struct {
@@ -302,7 +304,19 @@ func (s *Server) UpdateWorkload(ctx context.Context, req *runnersv1.UpdateWorklo
 		lastMeteringAt = &value
 	}
 
-	if statusValue == nil && containersJSON == nil && instanceID == nil && removedAt == nil && lastMeteringAt == nil && failureReason == nil && failureMessage == nil {
+	var removalConfirmedAt *time.Time
+	if req.RemovalConfirmedAt != nil {
+		if err := req.GetRemovalConfirmedAt().CheckValid(); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "removal_confirmed_at: %v", err)
+		}
+		if statusValue != nil && !isTerminalWorkloadStatus(*statusValue) {
+			return nil, status.Error(codes.InvalidArgument, "removal_confirmed_at requires a terminal workload")
+		}
+		value := req.GetRemovalConfirmedAt().AsTime()
+		removalConfirmedAt = &value
+	}
+
+	if statusValue == nil && containersJSON == nil && instanceID == nil && removedAt == nil && removalConfirmedAt == nil && lastMeteringAt == nil && failureReason == nil && failureMessage == nil {
 		return nil, status.Error(codes.InvalidArgument, "at least one field must be provided")
 	}
 
@@ -311,6 +325,9 @@ func (s *Server) UpdateWorkload(ctx context.Context, req *runnersv1.UpdateWorklo
 		needsExisting = true
 	}
 	if statusValue != nil && *statusValue == workloadStatusRunning {
+		needsExisting = true
+	}
+	if removalConfirmedAt != nil && statusValue == nil {
 		needsExisting = true
 	}
 
@@ -322,19 +339,23 @@ func (s *Server) UpdateWorkload(ctx context.Context, req *runnersv1.UpdateWorklo
 		}
 		existingWorkload = &workload
 	}
+	if removalConfirmedAt != nil && statusValue == nil && !isTerminalWorkloadStatus(existingWorkload.Status) {
+		return nil, status.Error(codes.FailedPrecondition, "removal_confirmed_at requires a terminal workload")
+	}
 
 	resetLastActivity := existingWorkload != nil && statusValue != nil && *statusValue == workloadStatusRunning && existingWorkload.Status == workloadStatusStarting
 
 	workload, err := s.updateWorkload(ctx, workloadUpdateInput{
-		ID:                id,
-		Status:            statusValue,
-		FailureReason:     failureReason,
-		FailureMessage:    failureMessage,
-		ContainersJSON:    containersJSON,
-		InstanceID:        instanceID,
-		RemovedAt:         removedAt,
-		LastMeteringAt:    lastMeteringAt,
-		ResetLastActivity: resetLastActivity,
+		ID:                 id,
+		Status:             statusValue,
+		FailureReason:      failureReason,
+		FailureMessage:     failureMessage,
+		ContainersJSON:     containersJSON,
+		InstanceID:         instanceID,
+		RemovedAt:          removedAt,
+		RemovalConfirmedAt: removalConfirmedAt,
+		LastMeteringAt:     lastMeteringAt,
+		ResetLastActivity:  resetLastActivity,
 	})
 	if err != nil {
 		return nil, toStatusError(err)
@@ -856,6 +877,10 @@ func (s *Server) updateWorkload(ctx context.Context, input workloadUpdateInput) 
 	}
 	if input.RemovedAt != nil {
 		addUpdateClause(&clauses, &args, "removed_at", *input.RemovedAt)
+	}
+	if input.RemovalConfirmedAt != nil {
+		args = append(args, *input.RemovalConfirmedAt)
+		clauses = append(clauses, fmt.Sprintf("removal_confirmed_at = COALESCE(removal_confirmed_at, $%d)", len(args)))
 	}
 	// A terminal status always carries removed_at, whoever wrote it.
 	if input.RemovedAt == nil && input.Status != nil && isTerminalWorkloadStatus(*input.Status) {
@@ -1458,17 +1483,18 @@ func (s *Server) batchUpdateWorkloadSampledAt(ctx context.Context, entries []sam
 
 func scanWorkload(row pgx.Row) (workloadRecord, error) {
 	var (
-		workload       workloadRecord
-		containersData []byte
-		threadID       nullableUUIDScanner
-		agentID        nullableUUIDScanner
-		failureReason  pgtype.Text
-		failureMessage pgtype.Text
-		instanceID     pgtype.Text
-		removedAt      pgtype.Timestamptz
-		lastMeteringAt pgtype.Timestamptz
-		ownerKindRaw   any
-		ownerIDRaw     any
+		workload           workloadRecord
+		containersData     []byte
+		threadID           nullableUUIDScanner
+		agentID            nullableUUIDScanner
+		failureReason      pgtype.Text
+		failureMessage     pgtype.Text
+		instanceID         pgtype.Text
+		removedAt          pgtype.Timestamptz
+		removalConfirmedAt pgtype.Timestamptz
+		lastMeteringAt     pgtype.Timestamptz
+		ownerKindRaw       any
+		ownerIDRaw         any
 	)
 	if err := row.Scan(
 		&workload.Meta.ID,
@@ -1494,6 +1520,7 @@ func scanWorkload(row pgx.Row) (workloadRecord, error) {
 		&ownerIDRaw,
 		&workload.Meta.CreatedAt,
 		&workload.Meta.UpdatedAt,
+		&removalConfirmedAt,
 	); err != nil {
 		return workloadRecord{}, err
 	}
@@ -1537,6 +1564,10 @@ func scanWorkload(row pgx.Row) (workloadRecord, error) {
 	if removedAt.Valid {
 		value := removedAt.Time
 		workload.RemovedAt = &value
+	}
+	if removalConfirmedAt.Valid {
+		value := removalConfirmedAt.Time
+		workload.RemovalConfirmedAt = &value
 	}
 	if lastMeteringAt.Valid {
 		value := lastMeteringAt.Time
@@ -1595,6 +1626,9 @@ func toProtoWorkload(record workloadRecord) (*runnersv1.Workload, error) {
 	}
 	if record.RemovedAt != nil {
 		protoWorkload.RemovedAt = timestamppb.New(*record.RemovedAt)
+	}
+	if record.RemovalConfirmedAt != nil {
+		protoWorkload.RemovalConfirmedAt = timestamppb.New(*record.RemovalConfirmedAt)
 	}
 	if record.LastMeteringAt != nil {
 		protoWorkload.LastMeteringSampledAt = timestamppb.New(*record.LastMeteringAt)

@@ -2,6 +2,45 @@
 
 The Runners service manages runner registrations and workload runtime state.
 
+## Explicit Workload Removal Confirmation
+
+`removed_at` retains its existing metering semantics: a failed/stopped status
+ends billing even when the workload has not been removed. The additive
+`removal_confirmed_at` field is written only by an explicit internal lifecycle
+update after runner inspection. Failure reports and logical deletion do not
+infer it. Migration `0017` deliberately leaves historical records unverified.
+
+Confirmation requires a terminal workload, preserves the first timestamp on
+retries, and does not overwrite billing end. A database constraint prevents a
+concurrent or older writer from reopening a confirmed workload. This is a
+record of a trusted controller's observation, not infrastructure fencing.
+
+The [API contribution branch](https://github.com/spk-ai/api/tree/feat/workload-removal-confirmation)
+supplies the additive protobuf fields. Until that contract is published, generate from the sibling
+API checkout instead of the BSR default:
+
+```sh
+cd ../api
+buf generate . --template ../runners/buf.gen.yaml --output ../runners \
+  --include-imports --path proto/agynio/api/identity/v1 \
+  --path proto/agynio/api/authorization/v1 --path proto/agynio/api/ziti_management/v1 \
+  --path proto/agynio/api/notifications/v1 --path proto/agynio/api/agents/v1 \
+  --path proto/agynio/api/runner/v1 --path proto/agynio/api/runners/v1
+cd ../runners
+go test ./...
+go test -race ./...
+```
+
+`TestLiveWorkloadRemovalConfirmation` additionally uses a disposable PostgreSQL
+database via `AGYN_RUNNERS_REMOVAL_TEST_DSN`. It refuses non-loopback hosts and
+databases not named `a2a_removal_acceptance`; it creates and removes its own
+schema. It verifies the real migration, authenticated runner failure reporting,
+explicit confirmation, retry preservation and the reopening constraint. It
+makes no agent/model calls and must not target the deployed platform database.
+
+Rollout requires the updated orchestrator and regenerated Gateway as well as
+this service. Historical workloads need inspection, not a timestamp backfill.
+
 Architecture: [Runners](https://github.com/agynio/architecture/blob/main/architecture/runners.md)
 
 ## Local Development
