@@ -765,15 +765,18 @@ func (s *Server) insertVolume(ctx context.Context, input volumeInsertInput) (vol
 }
 
 // reopenClosedVolume gives a create that collided with a closed row a fresh
-// provisioning generation: same disk slot, metering resumed from now. An open
-// row keeps the conflict.
+// provisioning generation: same disk slot and owner, metering resumed from now.
+// Match identity in the update itself so concurrent creates cannot take over a
+// closed slot. Open rows and identity mismatches keep the create conflict.
 func (s *Server) reopenClosedVolume(ctx context.Context, input volumeInsertInput) (volumeRecord, error) {
 	row := s.pool.QueryRow(ctx,
 		fmt.Sprintf(`UPDATE volumes
-	    SET volume_id = $2, thread_id = $3, runner_id = $4, agent_id = $5, organization_id = $6, size_gb = $7,
-	        status = $8, owner_kind = $9, owner_id = $10,
+	    SET size_gb = $7, status = $8,
 	        removed_at = NULL, instance_id = NULL, last_metering_sampled_at = NOW(), updated_at = NOW()
 	    WHERE id = $1 AND status IN ('%s', '%s')
+	        AND volume_id = $2 AND thread_id IS NOT DISTINCT FROM $3
+	        AND runner_id = $4 AND agent_id IS NOT DISTINCT FROM $5
+	        AND organization_id = $6 AND owner_kind = $9 AND owner_id = $10
 	    RETURNING %s`, volumeStatusDeleted, volumeStatusFailed, volumeColumns),
 		input.ID,
 		nullableUUIDValue(input.VolumeID),
@@ -793,8 +796,6 @@ func (s *Server) reopenClosedVolume(ctx context.Context, input volumeInsertInput
 		}
 		return volumeRecord{}, err
 	}
-	volume.OwnerKind = input.OwnerKind
-	volume.OwnerID = input.OwnerID
 	return volume, nil
 }
 
