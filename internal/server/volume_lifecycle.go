@@ -18,12 +18,18 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 func volumeLifecycleStatusError(err error) error {
 	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "55000" && pgErr.ConstraintName == "volumes_checked_lifecycle" {
-		return status.Error(codes.FailedPrecondition, "checked_volume_lifecycle_required")
+	if errors.As(err, &pgErr) && pgErr.Code == "55000" {
+		switch pgErr.ConstraintName {
+		case "volumes_checked_lifecycle":
+			return status.Error(codes.FailedPrecondition, "checked_volume_lifecycle_required")
+		case "volumes_legacy_adoption":
+			return status.Error(codes.FailedPrecondition, "legacy_volume_reconciliation_required")
+		}
 	}
 	return toStatusError(err)
 }
@@ -117,6 +123,9 @@ func applyVolumeOperation(volume *volumeRecord, req *runnersv1.UpdateVolumeCheck
 		if volume.Status != volumeStatusProvisioning && volume.Status != volumeStatusActive || volume.RemovalIntent != nil {
 			return fail("volume_not_bindable")
 		}
+		if !volume.CheckedLifecycle && (volume.InstanceID == nil || *volume.InstanceID == "") {
+			return fail("legacy_volume_recorded_instance_required")
+		}
 		instance := op.Bind.GetInstance()
 		if err := validateVolumeBinding(*volume, instance); err != nil {
 			return err
@@ -160,6 +169,9 @@ func applyVolumeOperation(volume *volumeRecord, req *runnersv1.UpdateVolumeCheck
 		}
 		volume.Status = volumeStatusFailed
 	case *runnersv1.UpdateVolumeCheckedRequest_Reopen:
+		if !volume.CheckedLifecycle {
+			return fail("legacy_volume_reconciliation_required")
+		}
 		request := op.Reopen.GetVolume()
 		if err := validateCheckedVolumeCreate(request); err != nil {
 			return err
@@ -200,15 +212,26 @@ func sameVolumeOwner(record volumeRecord, input volumeInsertInput) bool {
 }
 
 func validateVolumeBinding(record volumeRecord, instance *runnerv1.VolumeListItem) error {
-	if instance == nil || instance.GetInstanceId() == "" || strings.TrimSpace(instance.GetInstanceId()) != instance.GetInstanceId() ||
-		instance.GetInstanceUid() == "" || strings.TrimSpace(instance.GetInstanceUid()) != instance.GetInstanceUid() ||
-		len(instance.GetIdentityLabels()) == 0 || len(instance.GetIdentityLabels()) > 16 {
+	// The current checked profile uses k8s-runner's persistent identity contract.
+	// Reject targets the backend cannot remove before making the binding immutable.
+	if instance == nil || instance.GetInstanceId() == "" || len(validation.IsDNS1123Subdomain(instance.GetInstanceId())) != 0 ||
+		instance.GetInstanceUid() == "" || strings.TrimSpace(instance.GetInstanceUid()) != instance.GetInstanceUid() || len(instance.GetInstanceUid()) > 256 ||
+		len(instance.GetIdentityLabels()) == 0 || len(instance.GetIdentityLabels()) > 8 {
 		return status.Error(codes.InvalidArgument, "complete_volume_instance_required")
 	}
 	for key, value := range instance.IdentityLabels {
-		if key == "" || strings.TrimSpace(key) != key || value == "" || strings.TrimSpace(value) != value {
+		switch key {
+		case "app.kubernetes.io/managed-by", "agyn.dev/managed-by", "volume_key", "managed-by", "agent-instance-id", "agent-id", "sandbox-id", "sandbox-owner-id":
+		default:
+			return status.Error(codes.InvalidArgument, "nonpersistent_volume_identity_label")
+		}
+		if value == "" || len(validation.IsValidLabelValue(value)) != 0 {
 			return status.Error(codes.InvalidArgument, "invalid_volume_identity_label")
 		}
+	}
+	size, err := parseVolumeSize(record.SizeGB)
+	if err != nil || size.Sign() <= 0 {
+		return status.Error(codes.FailedPrecondition, "volume_size_requires_reconciliation")
 	}
 	labels := instance.IdentityLabels
 	ownerMatches := false
@@ -221,7 +244,9 @@ func validateVolumeBinding(record volumeRecord, instance *runnerv1.VolumeListIte
 			labels["agent-instance-id"] == "" && labels["agent-id"] == ""
 	}
 	if !ownerMatches || instance.VolumeKey != record.Meta.ID.String() || labels["volume_key"] != record.Meta.ID.String() ||
-		labels["managed-by"] != "agents-orchestrator" || record.InstanceID != nil && *record.InstanceID != instance.InstanceId {
+		labels["managed-by"] != "agents-orchestrator" || labels["app.kubernetes.io/managed-by"] != "k8s-runner" ||
+		labels["agyn.dev/managed-by"] != "" && labels["agyn.dev/managed-by"] != "agents-orchestrator" ||
+		record.InstanceID != nil && *record.InstanceID != instance.InstanceId {
 		return status.Error(codes.FailedPrecondition, "volume_instance_owner_mismatch")
 	}
 	return nil

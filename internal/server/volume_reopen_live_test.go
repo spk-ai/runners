@@ -259,8 +259,14 @@ func TestLiveVolumeReopen(t *testing.T) {
 	t.Run("workload-admission", func(t *testing.T) {
 		testVolumeWorkloadAdmission(t, ctx, srv, pool, reader, newRequest)
 	})
+	t.Run("legacy-adoption", func(t *testing.T) {
+		testLegacyVolumeAdoption(t, ctx, pool, reader, newRequest)
+	})
 	t.Run("admission-migration", func(t *testing.T) {
 		testVolumeAdmissionMigration(t, ctx, pool.Config())
+	})
+	t.Run("adoption-migration", func(t *testing.T) {
+		testVolumeAdoptionMigration(t, ctx, pool.Config())
 	})
 
 	t.Run("concurrent-reopen", func(t *testing.T) {

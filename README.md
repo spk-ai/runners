@@ -201,6 +201,53 @@ acceptance remain required. The database reservation does not fence delayed
 backend creates, a replayed Start RPC or a partitioned node, and it does not
 authenticate the controller's removal evidence or the selected runner backend.
 
+### Explicit legacy adoption
+
+The dependent `feat/legacy-volume-adoption` branch adds migration
+`0020_legacy_volume_adoption.sql` on top of `f05b479`. It reuses the proposed
+`UpdateVolumeChecked(bind)` RPC; it does not add an adoption endpoint or
+automatically import existing records.
+
+An audited legacy record must be active/provisioning, already have the same
+recorded physical name, and have no unconfirmed workload for its durable owner.
+The migration shares the workload admission guard's real database write, so a
+concurrent workload or stale transaction snapshot cannot slip through a prior
+idle scan. All workload states retain the reservation until explicit removal
+confirmation; a billing timestamp is insufficient. The database trigger also
+rejects adoption that changes size or resets metering history.
+
+Ordinary checked reopen now rejects all unchecked records. Failed, deleted and
+unbound legacy generations must remain retained for explicit reconciliation;
+neither this RPC nor the migration establishes that an old create cannot still
+finish. Checked failed-provisioning recovery remains available through its
+existing guarded reopen path. Adoption commits before a subsequent compatible
+workload is allowed; it is not a lasting deployment drain.
+
+Bindings for the current Kubernetes profile validate names and label values
+with the same `k8s.io/apimachinery` validation library version as the native
+runner, following the Kubernetes [object-name rules](https://kubernetes.io/docs/concepts/overview/working-with-objects/names/).
+The eight allowed persistent label keys, required backend/controller managers,
+optional manager value, bounded opaque UID and positive stored size are checked
+before binding becomes immutable. Transient workload/thread labels are rejected,
+not silently removed. Other backend profiles require an explicit identity
+contract; this does not claim a new backend-neutral validation API.
+
+`TestLiveVolumeReopen/legacy-adoption` covers both owner kinds, all five
+unconfirmed workload states, known-name provenance, unchanged rejected writes,
+revision retries and 32 actually blocked transaction interleavings across all
+four isolation settings. Another owner's adoption progresses while the tested
+owner is blocked. `adoption-migration` upgrades from `0019`, verifies repeated
+migration leaves volume/workload/guard history unchanged, and exercises the new
+raw-SQL guards. Full `go test -race ./...` passes with both disposable database
+gates enabled (419 tests including subtests); `go build ./...` and `go vet ./...`
+also pass. These fixtures use no deployed database, Kubernetes or model.
+
+The migration is a local precondition, not an ownership audit or a deployment
+permit. It does not authenticate callers, verify sandbox human ownership, prove
+backend incarnation, retroactively validate existing checked bindings, stop old
+writers or fence in-flight creates/deletes and partitioned nodes. Those checks
+and a coordinated all-writer rollout remain mandatory before real adoption.
+
 ## Helm chart defaults
 
 The chart ships with a DENY-based Istio AuthorizationPolicy. By default,

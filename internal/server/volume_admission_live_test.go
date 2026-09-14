@@ -264,6 +264,14 @@ func testVolumeWorkloadAdmission(t *testing.T, ctx context.Context, srv *Server,
 				t.Fatal(err)
 			}
 			v := legacy.Volume
+			active := runnersv1.VolumeStatus_VOLUME_STATUS_ACTIVE
+			named, err := srv.UpdateVolume(ctx, &runnersv1.UpdateVolumeRequest{
+				Id: v.Meta.Id, Status: &active, InstanceId: ptr(lifecycleTestInstance(v).InstanceId),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			v = named.Volume
 			w := workloadRequest(v)
 			switch field {
 			case "organization":

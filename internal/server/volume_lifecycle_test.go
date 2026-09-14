@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"math"
+	"strings"
 	"testing"
 
 	runnerv1 "github.com/agynio/runners/.gen/go/agynio/api/runner/v1"
@@ -45,7 +46,7 @@ func TestVolumeBindingVerifiesDurableOwner(t *testing.T) {
 	for _, sandbox := range []bool{false, true} {
 		record := volumeRecord{
 			Meta: entityMeta{ID: uuid.New()}, VolumeID: uuid.New(), ThreadID: uuid.New(), AgentID: uuid.New(), OwnerID: uuid.New(),
-			OwnerKind: runtimeOwnerKindAgentInstance, Status: volumeStatusProvisioning, LifecycleRevision: 1,
+			OwnerKind: runtimeOwnerKindAgentInstance, Status: volumeStatusProvisioning, LifecycleRevision: 1, SizeGB: "1",
 		}
 		if sandbox {
 			record.OwnerKind = runtimeOwnerKindSandbox
@@ -59,16 +60,25 @@ func TestVolumeBindingVerifiesDurableOwner(t *testing.T) {
 			t.Fatalf("valid binding: %v", err)
 		}
 		for name, mutate := range map[string]func(*runnerv1.VolumeListItem){
-			"blank name":      func(v *runnerv1.VolumeListItem) { v.InstanceId = "" },
-			"blank uid":       func(v *runnerv1.VolumeListItem) { v.InstanceUid = "" },
-			"padded uid":      func(v *runnerv1.VolumeListItem) { v.InstanceUid += " " },
-			"wrong key":       func(v *runnerv1.VolumeListItem) { v.VolumeKey = uuid.NewString() },
-			"wrong manager":   func(v *runnerv1.VolumeListItem) { v.IdentityLabels["managed-by"] = "other" },
-			"wrong label key": func(v *runnerv1.VolumeListItem) { v.IdentityLabels["volume_key"] = uuid.NewString() },
-			"missing labels":  func(v *runnerv1.VolumeListItem) { v.IdentityLabels = nil },
-			"padded label":    func(v *runnerv1.VolumeListItem) { v.IdentityLabels["managed-by"] += " " },
-			"wrong instance":  func(v *runnerv1.VolumeListItem) { v.IdentityLabels["agent-instance-id"] = uuid.NewString() },
-			"wrong sandbox":   func(v *runnerv1.VolumeListItem) { v.IdentityLabels["sandbox-id"] = uuid.NewString() },
+			"blank name":              func(v *runnerv1.VolumeListItem) { v.InstanceId = "" },
+			"invalid name":            func(v *runnerv1.VolumeListItem) { v.InstanceId = "Not/A/Claim" },
+			"long name":               func(v *runnerv1.VolumeListItem) { v.InstanceId = strings.Repeat("a", 254) },
+			"blank uid":               func(v *runnerv1.VolumeListItem) { v.InstanceUid = "" },
+			"padded uid":              func(v *runnerv1.VolumeListItem) { v.InstanceUid += " " },
+			"long uid":                func(v *runnerv1.VolumeListItem) { v.InstanceUid = strings.Repeat("a", 257) },
+			"wrong key":               func(v *runnerv1.VolumeListItem) { v.VolumeKey = uuid.NewString() },
+			"wrong manager":           func(v *runnerv1.VolumeListItem) { v.IdentityLabels["managed-by"] = "other" },
+			"wrong label key":         func(v *runnerv1.VolumeListItem) { v.IdentityLabels["volume_key"] = uuid.NewString() },
+			"missing labels":          func(v *runnerv1.VolumeListItem) { v.IdentityLabels = nil },
+			"padded label":            func(v *runnerv1.VolumeListItem) { v.IdentityLabels["managed-by"] += " " },
+			"wrong instance":          func(v *runnerv1.VolumeListItem) { v.IdentityLabels["agent-instance-id"] = uuid.NewString() },
+			"wrong sandbox":           func(v *runnerv1.VolumeListItem) { v.IdentityLabels["sandbox-id"] = uuid.NewString() },
+			"missing backend manager": func(v *runnerv1.VolumeListItem) { delete(v.IdentityLabels, "app.kubernetes.io/managed-by") },
+			"wrong backend manager":   func(v *runnerv1.VolumeListItem) { v.IdentityLabels["app.kubernetes.io/managed-by"] = "other" },
+			"wrong optional manager":  func(v *runnerv1.VolumeListItem) { v.IdentityLabels["agyn.dev/managed-by"] = "other" },
+			"unknown identity":        func(v *runnerv1.VolumeListItem) { v.IdentityLabels["extra"] = "value" },
+			"ephemeral workload":      func(v *runnerv1.VolumeListItem) { v.IdentityLabels["workload_key"] = uuid.NewString() },
+			"ephemeral thread":        func(v *runnerv1.VolumeListItem) { v.IdentityLabels["thread-id"] = uuid.NewString() },
 		} {
 			t.Run(v.OwnerKind.String()+"/"+name, func(t *testing.T) {
 				bad := proto.Clone(original).(*runnerv1.VolumeListItem)
@@ -77,6 +87,27 @@ func TestVolumeBindingVerifiesDurableOwner(t *testing.T) {
 					t.Fatal("invalid binding accepted")
 				}
 			})
+		}
+		withoutOptional := proto.Clone(original).(*runnerv1.VolumeListItem)
+		delete(withoutOptional.IdentityLabels, "agyn.dev/managed-by")
+		if err := validateVolumeBinding(record, withoutOptional); err != nil {
+			t.Fatalf("optional manager became mandatory: %v", err)
+		}
+		if sandbox {
+			for _, owner := range []string{"invalid/owner", strings.Repeat("a", 64)} {
+				bad := proto.Clone(original).(*runnerv1.VolumeListItem)
+				bad.IdentityLabels["sandbox-owner-id"] = owner
+				if err := validateVolumeBinding(record, bad); status.Code(err) != codes.InvalidArgument {
+					t.Fatalf("invalid sandbox owner label: %v", err)
+				}
+			}
+		}
+		for _, size := range []string{"", "invalid", "0", "-1"} {
+			badRecord := record
+			badRecord.SizeGB = size
+			if err := validateVolumeBinding(badRecord, original); status.Code(err) != codes.FailedPrecondition {
+				t.Fatalf("invalid stored size %q bound: %v", size, err)
+			}
 		}
 		record.InstanceID = ptr("already-recorded-name")
 		if err := validateVolumeBinding(record, original); status.Code(err) != codes.FailedPrecondition {
