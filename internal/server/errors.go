@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -59,6 +60,15 @@ func InvalidPageToken(err error) error {
 }
 
 func toStatusError(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		if pgErr.Code == "55000" && pgErr.ConstraintName == "runtime_volume_admission" {
+			return status.Error(codes.FailedPrecondition, "runtime_volume_admission_conflict")
+		}
+		if pgErr.Code == "40001" || pgErr.Code == "40P01" {
+			return status.Error(codes.Aborted, "transaction_conflict")
+		}
+	}
 	var notFound *NotFoundError
 	if errors.As(err, &notFound) {
 		return status.Error(codes.NotFound, notFound.Error())

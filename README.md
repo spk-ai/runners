@@ -139,6 +139,68 @@ Drain/audit all writers before activation; legacy records are not automatically
 adopted. Service authorization, late backend creates, partitioned nodes,
 storage-level fencing and checked-record retention remain production work.
 
+### Workload admission and volume removal
+
+Migration `0019_volume_workload_admission.sql` closes the interval between a
+controller's idle-workload scan and its checked begin-removal update. It requires
+both the workload confirmation migration `0017` and checked-volume migration
+`0018`; this branch is based on their combined integration `0492121`, not the
+independent checked-volume contribution alone.
+
+For each checked runtime owner, database triggers enforce the following:
+
+- At most one unconfirmed workload may be admitted. A stopped/failed workload
+  with only a billing timestamp still holds that admission until explicit
+  physical-removal confirmation. Different owners have independent guards.
+- Admission requires all of that owner's checked volumes to be provisioning or
+  active, with matching organization, runner, thread and agent class. Closed
+  checked volumes must be explicitly reopened; pending deletion cannot be
+  bypassed by a new workload ID or different organization.
+- Begin-removal and failed-generation reopen require no unconfirmed workloads.
+  Stale failure compensation cannot fail provisioning while an owner is starting
+  or running. Failure/stop transitions and subsequent removal confirmation remain
+  available for cleanup.
+- Protected workload identity and an existing confirmation cannot be rewritten.
+  Unconfirmed workload records cannot be deleted to make an owner appear idle.
+  Old SQL writers are subject to the same triggers.
+
+The guard key is `(owner_kind, owner_id)`, not an organization or agent-class
+global lock. Both sides write the same small guard row before reading the other
+table, and do not lock each other's workload/volume rows. The separate reads in
+the volatile triggers use PostgreSQL's
+[fresh function-query snapshots](https://www.postgresql.org/docs/16/xfunc-volatility.html).
+The actual guard-row write also makes a stale repeatable-read/serializable
+transaction fail instead of accepting an old view; see
+[transaction isolation](https://www.postgresql.org/docs/16/transaction-iso.html).
+Guard revisions are internal synchronization, not an execution token or a
+replacement for the volume lifecycle revision. Metering-only updates skip them.
+
+Migration locks both tables while installing the guards. It rejects existing
+checked owners with contradictory deletion/workload state, identity mismatches
+or multiple unconfirmed workloads. It neither modifies historical rows nor
+infers absence. Audit/drain before rollout, preserve guard rows, and use new
+workload IDs after confirmed removal. A database admission rejection maps to
+`FailedPrecondition`; serialization/deadlock errors map to `Aborted`. Neither
+permits automatically replaying a backend side effect.
+
+`TestLiveVolumeReopen/workload-admission` uses the existing disposable database
+gate and exercises real registry methods with a stub authorization writer, plus
+raw SQL interleavings. Forty-eight blocked cases cover both owner kinds, all
+four PostgreSQL isolation settings, either race winner, winner rollback and
+competing starts. Each observes the actual blocker PID, admits a different owner
+while blocked, joins the losing operation and independently reads committed
+state. `admission-migration` tests valid upgrades and atomic refusal of four
+historical contradictions. No runner, Kubernetes, model or deployed database is
+used by these admission fixtures.
+
+Generate from the combined API proposal `ec2bfed` (the generation command above
+with that checkout), then run both gated database suites and the complete race
+suite. The published BSR API and stock platform images do not contain these
+proposals. Controller/sandbox integration, mixed-writer rollout and full A2A
+acceptance remain required. The database reservation does not fence delayed
+backend creates, a replayed Start RPC or a partitioned node, and it does not
+authenticate the controller's removal evidence or the selected runner backend.
+
 ## Helm chart defaults
 
 The chart ships with a DENY-based Istio AuthorizationPolicy. By default,
