@@ -12,6 +12,7 @@ import (
 
 	agentsv1 "github.com/agynio/runners/.gen/go/agynio/api/agents/v1"
 	notificationsv1 "github.com/agynio/runners/.gen/go/agynio/api/notifications/v1"
+	runnerv1 "github.com/agynio/runners/.gen/go/agynio/api/runner/v1"
 	runnersv1 "github.com/agynio/runners/.gen/go/agynio/api/runners/v1"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -19,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -30,36 +32,41 @@ const (
 	volumeStatusDeleted      = "deleted"
 	volumeStatusFailed       = "failed"
 
-	volumeColumns = `id, instance_id, volume_id, thread_id, runner_id, agent_id, organization_id, size_gb, status, removed_at, last_metering_sampled_at, owner_kind, owner_id, created_at, updated_at`
+	volumeColumns = `id, instance_id, volume_id, thread_id, runner_id, agent_id, organization_id, size_gb, status, removed_at, last_metering_sampled_at, owner_kind, owner_id, created_at, updated_at, lifecycle_revision, checked_lifecycle, bound_instance, removal_intent`
 )
 
 type volumeRecord struct {
-	Meta           entityMeta
-	InstanceID     *string
-	VolumeID       uuid.UUID
-	ThreadID       uuid.UUID
-	RunnerID       uuid.UUID
-	AgentID        uuid.UUID
-	OrganizationID uuid.UUID
-	SizeGB         string
-	Status         string
-	RemovedAt      *time.Time
-	LastMeteringAt *time.Time
-	OwnerKind      string
-	OwnerID        uuid.UUID
+	Meta              entityMeta
+	InstanceID        *string
+	VolumeID          uuid.UUID
+	ThreadID          uuid.UUID
+	RunnerID          uuid.UUID
+	AgentID           uuid.UUID
+	OrganizationID    uuid.UUID
+	SizeGB            string
+	Status            string
+	RemovedAt         *time.Time
+	LastMeteringAt    *time.Time
+	OwnerKind         string
+	OwnerID           uuid.UUID
+	LifecycleRevision int64
+	CheckedLifecycle  bool
+	BoundInstance     *runnerv1.VolumeListItem
+	RemovalIntent     *runnersv1.VolumeRemovalIntent
 }
 
 type volumeInsertInput struct {
-	ID             uuid.UUID
-	VolumeID       *uuid.UUID
-	ThreadID       *uuid.UUID
-	RunnerID       uuid.UUID
-	AgentID        *uuid.UUID
-	OrganizationID uuid.UUID
-	SizeGB         string
-	Status         string
-	OwnerKind      string
-	OwnerID        uuid.UUID
+	ID               uuid.UUID
+	VolumeID         *uuid.UUID
+	ThreadID         *uuid.UUID
+	RunnerID         uuid.UUID
+	AgentID          *uuid.UUID
+	OrganizationID   uuid.UUID
+	SizeGB           string
+	Status           string
+	OwnerKind        string
+	OwnerID          uuid.UUID
+	CheckedLifecycle bool
 }
 
 type volumeUpdateInput struct {
@@ -121,9 +128,33 @@ func newVolumeEnrichmentCache() *volumeEnrichmentCache {
 }
 
 func (s *Server) CreateVolume(ctx context.Context, req *runnersv1.CreateVolumeRequest) (*runnersv1.CreateVolumeResponse, error) {
+	return s.createVolume(ctx, req, false)
+}
+
+func (s *Server) createVolume(ctx context.Context, req *runnersv1.CreateVolumeRequest, checked bool) (*runnersv1.CreateVolumeResponse, error) {
+	input, err := parseVolumeCreate(req)
+	if err != nil {
+		return nil, err
+	}
+	input.CheckedLifecycle = checked
+	volume, err := s.insertVolume(ctx, input)
+	if err != nil {
+		return nil, volumeLifecycleStatusError(err)
+	}
+	protoVolume, err := toProtoVolume(volume)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "convert volume: %v", err)
+	}
+	return &runnersv1.CreateVolumeResponse{Volume: protoVolume}, nil
+}
+
+func parseVolumeCreate(req *runnersv1.CreateVolumeRequest) (volumeInsertInput, error) {
+	if req == nil {
+		return volumeInsertInput{}, status.Error(codes.InvalidArgument, "volume required")
+	}
 	id, err := parseUUID(req.GetId())
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
+		return volumeInsertInput{}, status.Errorf(codes.InvalidArgument, "id: %v", err)
 	}
 	volumeValue := req.GetVolumeId()
 	if req.VolumeDefinitionId != nil {
@@ -131,15 +162,15 @@ func (s *Server) CreateVolume(ctx context.Context, req *runnersv1.CreateVolumeRe
 	}
 	volumeID, err := parseOptionalUUID(volumeValue)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "volume_definition_id: %v", err)
+		return volumeInsertInput{}, status.Errorf(codes.InvalidArgument, "volume_definition_id: %v", err)
 	}
 	threadID, err := parseOptionalUUID(req.GetThreadId())
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "thread_id: %v", err)
+		return volumeInsertInput{}, status.Errorf(codes.InvalidArgument, "thread_id: %v", err)
 	}
 	runnerID, err := parseUUID(req.GetRunnerId())
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "runner_id: %v", err)
+		return volumeInsertInput{}, status.Errorf(codes.InvalidArgument, "runner_id: %v", err)
 	}
 	agentValue := req.GetAgentId()
 	if req.AgentClassId != nil {
@@ -147,44 +178,44 @@ func (s *Server) CreateVolume(ctx context.Context, req *runnersv1.CreateVolumeRe
 	}
 	agentID, err := parseOptionalUUID(agentValue)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "agent_class_id: %v", err)
+		return volumeInsertInput{}, status.Errorf(codes.InvalidArgument, "agent_class_id: %v", err)
 	}
 	organizationID, err := parseUUID(req.GetOrganizationId())
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "organization_id: %v", err)
+		return volumeInsertInput{}, status.Errorf(codes.InvalidArgument, "organization_id: %v", err)
 	}
 	ownerKind, err := runtimeOwnerKindToString(req.GetOwnerKind())
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "owner_kind: %v", err)
+		return volumeInsertInput{}, status.Errorf(codes.InvalidArgument, "owner_kind: %v", err)
 	}
 	ownerID, err := runtimeOwnerIDFromRequest(req.GetOwnerId(), req.AgentInstanceId, ownerKind)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "owner_id: %v", err)
+		return volumeInsertInput{}, status.Errorf(codes.InvalidArgument, "owner_id: %v", err)
 	}
 	// Every disk is made from a definition an operator declared, whatever owns
 	// it. The implicit sandbox workspace was the one exception and is gone.
 	if volumeID == nil {
-		return nil, status.Error(codes.InvalidArgument, "volume_definition_id: value is empty")
+		return volumeInsertInput{}, status.Error(codes.InvalidArgument, "volume_definition_id: value is empty")
 	}
 	if ownerKind == runtimeOwnerKindAgentInstance {
 		if threadID == nil {
-			return nil, status.Error(codes.InvalidArgument, "thread_id: value is empty")
+			return volumeInsertInput{}, status.Error(codes.InvalidArgument, "thread_id: value is empty")
 		}
 		if agentID == nil {
-			return nil, status.Error(codes.InvalidArgument, "agent_class_id: value is empty")
+			return volumeInsertInput{}, status.Error(codes.InvalidArgument, "agent_class_id: value is empty")
 		}
 	}
 
 	statusValue, err := volumeStatusToString(req.GetStatus())
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "status: %v", err)
+		return volumeInsertInput{}, status.Errorf(codes.InvalidArgument, "status: %v", err)
 	}
 	sizeGB := strings.TrimSpace(req.GetSizeGb())
 	if sizeGB == "" {
-		return nil, status.Error(codes.InvalidArgument, "size_gb must be provided")
+		return volumeInsertInput{}, status.Error(codes.InvalidArgument, "size_gb must be provided")
 	}
 
-	volume, err := s.insertVolume(ctx, volumeInsertInput{
+	return volumeInsertInput{
 		ID:             id,
 		VolumeID:       volumeID,
 		ThreadID:       threadID,
@@ -195,15 +226,7 @@ func (s *Server) CreateVolume(ctx context.Context, req *runnersv1.CreateVolumeRe
 		Status:         statusValue,
 		OwnerKind:      ownerKind,
 		OwnerID:        *ownerID,
-	})
-	if err != nil {
-		return nil, toStatusError(err)
-	}
-	protoVolume, err := toProtoVolume(volume)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "convert volume: %v", err)
-	}
-	return &runnersv1.CreateVolumeResponse{Volume: protoVolume}, nil
+	}, nil
 }
 
 func (s *Server) UpdateVolume(ctx context.Context, req *runnersv1.UpdateVolumeRequest) (*runnersv1.UpdateVolumeResponse, error) {
@@ -269,7 +292,7 @@ func (s *Server) UpdateVolume(ctx context.Context, req *runnersv1.UpdateVolumeRe
 		LastMeteringAt: lastMeteringAt,
 	})
 	if err != nil {
-		return nil, toStatusError(err)
+		return nil, volumeLifecycleStatusError(err)
 	}
 	if existingVolume != nil {
 		statusChanged := statusValue != nil && *statusValue != existingVolume.Status
@@ -732,8 +755,8 @@ func (s *Server) BatchUpdateVolumeSampledAt(ctx context.Context, req *runnersv1.
 
 func (s *Server) insertVolume(ctx context.Context, input volumeInsertInput) (volumeRecord, error) {
 	row := s.pool.QueryRow(ctx,
-		fmt.Sprintf(`INSERT INTO volumes (id, volume_id, thread_id, runner_id, agent_id, organization_id, size_gb, status, owner_kind, owner_id)
-	    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		fmt.Sprintf(`INSERT INTO volumes (id, volume_id, thread_id, runner_id, agent_id, organization_id, size_gb, status, owner_kind, owner_id, checked_lifecycle)
+	    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 	    RETURNING %s`, volumeColumns),
 		input.ID,
 		nullableUUIDValue(input.VolumeID),
@@ -745,12 +768,16 @@ func (s *Server) insertVolume(ctx context.Context, input volumeInsertInput) (vol
 		input.Status,
 		input.OwnerKind,
 		input.OwnerID,
+		input.CheckedLifecycle,
 	)
 	volume, err := scanVolume(row)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) {
 			if pgErr.Code == "23505" {
+				if input.CheckedLifecycle {
+					return volumeRecord{}, AlreadyExists("volume")
+				}
 				return s.reopenClosedVolume(ctx, input)
 			}
 			if pgErr.Code == "23503" {
@@ -773,7 +800,7 @@ func (s *Server) reopenClosedVolume(ctx context.Context, input volumeInsertInput
 		fmt.Sprintf(`UPDATE volumes
 	    SET size_gb = $7, status = $8,
 	        removed_at = NULL, instance_id = NULL, last_metering_sampled_at = NOW(), updated_at = NOW()
-	    WHERE id = $1 AND status IN ('%s', '%s')
+	    WHERE id = $1 AND NOT checked_lifecycle AND status IN ('%s', '%s')
 	        AND volume_id = $2 AND thread_id IS NOT DISTINCT FROM $3
 	        AND runner_id = $4 AND agent_id IS NOT DISTINCT FROM $5
 	        AND organization_id = $6 AND owner_kind = $9 AND owner_id = $10
@@ -1629,6 +1656,8 @@ func scanVolume(row pgx.Row) (volumeRecord, error) {
 		removedAt      pgtype.Timestamptz
 		lastMeteringAt pgtype.Timestamptz
 		ownerID        nullableUUIDScanner
+		boundJSON      []byte
+		intentJSON     []byte
 	)
 	if err := row.Scan(
 		&volume.Meta.ID,
@@ -1646,11 +1675,30 @@ func scanVolume(row pgx.Row) (volumeRecord, error) {
 		&ownerID,
 		&volume.Meta.CreatedAt,
 		&volume.Meta.UpdatedAt,
+		&volume.LifecycleRevision,
+		&volume.CheckedLifecycle,
+		&boundJSON,
+		&intentJSON,
 	); err != nil {
 		return volumeRecord{}, err
 	}
 	if !ownerID.Valid {
 		return volumeRecord{}, fmt.Errorf("owner_id missing")
+	}
+	if volume.LifecycleRevision <= 0 {
+		return volumeRecord{}, fmt.Errorf("volume lifecycle revision missing")
+	}
+	if len(boundJSON) != 0 {
+		volume.BoundInstance = &runnerv1.VolumeListItem{}
+		if err := protojson.Unmarshal(boundJSON, volume.BoundInstance); err != nil {
+			return volumeRecord{}, fmt.Errorf("decode volume binding: %w", err)
+		}
+	}
+	if len(intentJSON) != 0 {
+		volume.RemovalIntent = &runnersv1.VolumeRemovalIntent{}
+		if err := protojson.Unmarshal(intentJSON, volume.RemovalIntent); err != nil {
+			return volumeRecord{}, fmt.Errorf("decode volume removal intent: %w", err)
+		}
 	}
 	volume.OwnerID = ownerID.UUID
 	if volumeID.Valid {
@@ -1683,12 +1731,16 @@ func toProtoVolume(record volumeRecord) (*runnersv1.Volume, error) {
 		return nil, err
 	}
 	protoVolume := &runnersv1.Volume{
-		Meta:           toProtoEntityMeta(record.Meta),
-		RunnerId:       record.RunnerID.String(),
-		OrganizationId: record.OrganizationID.String(),
-		SizeGb:         record.SizeGB,
-		Status:         statusValue,
-		OwnerId:        record.OwnerID.String(),
+		Meta:              toProtoEntityMeta(record.Meta),
+		RunnerId:          record.RunnerID.String(),
+		OrganizationId:    record.OrganizationID.String(),
+		SizeGb:            record.SizeGB,
+		Status:            statusValue,
+		OwnerId:           record.OwnerID.String(),
+		LifecycleRevision: uint64(record.LifecycleRevision),
+		CheckedLifecycle:  record.CheckedLifecycle,
+		BoundInstance:     record.BoundInstance,
+		RemovalIntent:     record.RemovalIntent,
 	}
 	ownerKind, err := runtimeOwnerKindFromString(record.OwnerKind)
 	if err != nil {

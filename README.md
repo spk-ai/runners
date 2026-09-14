@@ -92,7 +92,8 @@ A successful reopen retains identity and creation time, clears the previous
 backing instance and removal timestamp, and restarts metering. Existing size
 and requested-status behavior is unchanged. This does not authorize RPC callers,
 validate a runner's actual PVC, fence old workloads, or make SQL administrator
-writes immutable. No API or database migration is required.
+writes immutable. That legacy ownership check itself needs no new API or database
+migration. Checked records are excluded from implicit create/reopen.
 
 CI runs `TestLiveVolumeReopen` against disposable PostgreSQL. To run it locally,
 set `AGYN_RUNNERS_VOLUME_TEST_DSN` to a PostgreSQL URL for a disposable database
@@ -107,6 +108,36 @@ only that schema. It checks same-owner recovery, canonical/deprecated fields,
 ownership mismatches, nullable sandbox identity, unchanged conflicts, and
 overlapping PostgreSQL updates. It makes no agent/model calls. Never point it at
 the deployed platform database.
+
+### Checked volume lifecycle
+
+This branch additionally requires the proposed checked-volume API and migration
+`0018_checked_volume_lifecycle.sql`. It adds a positive lifecycle revision, a
+sticky checked flag, the bound backend incarnation and a durable removal intent.
+
+Use `CreateVolumeChecked` for new provisioning, then revision-checked bind,
+begin-removal, confirm-removal, fail-provisioning or explicit reopen operations.
+Binding validates logical owner/class/key and cannot replace a live generation's
+UID. Begin commits the immutable target before any backend deletion. Confirmation
+requires that intent's ID; its authorized caller must first obtain matching
+runner `ABSENT` evidence. This server does not independently contact the runner.
+
+Database triggers reject legacy lifecycle mutations of checked rows, attempted
+unprotection/retargeting, discarded pending intents and direct checked-record
+deletion. Legacy lifecycle changes advance revisions; metering alone does not.
+Checked SQL uses an atomic revision predicate and does not overwrite concurrent
+metering updates. Reopen validates all persistent identity fields; deleted
+generations require confirmation, while failed provisioning is not absence proof.
+
+The existing disposable PostgreSQL test now includes agent/sandbox checked
+lifecycles, independent-reader persistence, new-server-object intent recovery,
+raw old-SQL rejection, stale retries, guarded reopen and eight simultaneously
+blocked checked updates with exactly one successful CAS. It does not prove a
+real runner's absence, process-level failover or a deployed coordinated rollout.
+
+Drain/audit all writers before activation; legacy records are not automatically
+adopted. Service authorization, late backend creates, partitioned nodes,
+storage-level fencing and checked-record retention remain production work.
 
 ## Helm chart defaults
 

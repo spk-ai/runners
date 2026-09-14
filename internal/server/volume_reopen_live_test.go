@@ -128,6 +128,7 @@ func TestLiveVolumeReopen(t *testing.T) {
 		expected.InstanceId, expected.RemovedAt = nil, nil
 		expected.LastMeteringSampledAt = current.LastMeteringSampledAt
 		expected.Meta.UpdatedAt = current.Meta.UpdatedAt
+		expected.LifecycleRevision++
 		if !proto.Equal(expected, current) {
 			t.Fatal("reopen changed persistent volume identity or creation time")
 		}
@@ -251,6 +252,10 @@ func TestLiveVolumeReopen(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("checked-lifecycle", func(t *testing.T) {
+		testCheckedVolumeLifecycle(t, ctx, srv, pool, reader, newRequest)
+	})
 
 	t.Run("concurrent-reopen", func(t *testing.T) {
 		req := newRequest(false)
