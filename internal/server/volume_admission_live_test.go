@@ -131,7 +131,7 @@ func testVolumeWorkloadAdmission(t *testing.T, ctx context.Context, srv *Server,
 				if phase == "deleted" {
 					resp, err = srv.UpdateVolumeChecked(ctx, &runnersv1.UpdateVolumeCheckedRequest{
 						Id: v.Meta.Id, ExpectedRevision: v.LifecycleRevision,
-						Operation: &runnersv1.UpdateVolumeCheckedRequest_ConfirmRemoval{ConfirmRemoval: &runnersv1.ConfirmVolumeRemoval{IntentId: v.RemovalIntent.Id}},
+						Operation: &runnersv1.UpdateVolumeCheckedRequest_ConfirmRemoval{ConfirmRemoval: &runnersv1.ConfirmVolumeRemoval{IntentId: v.RemovalIntent.Id, BackendId: v.RemovalIntent.Expected.BackendId}},
 					})
 					if err != nil {
 						t.Fatal(err)

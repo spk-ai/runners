@@ -268,6 +268,9 @@ func TestLiveVolumeReopen(t *testing.T) {
 	t.Run("adoption-migration", func(t *testing.T) {
 		testVolumeAdoptionMigration(t, ctx, pool.Config())
 	})
+	t.Run("backend-migration", func(t *testing.T) {
+		testVolumeBackendMigration(t, ctx, pool.Config())
+	})
 
 	t.Run("concurrent-reopen", func(t *testing.T) {
 		req := newRequest(false)

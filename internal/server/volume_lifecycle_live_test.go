@@ -89,7 +89,7 @@ func testCheckedVolumeLifecycle(t *testing.T, ctx context.Context, srv *Server, 
 		return &runnersv1.UpdateVolumeCheckedRequest{Operation: &runnersv1.UpdateVolumeCheckedRequest_Reopen{Reopen: &runnersv1.ReopenVolume{Volume: req}}}
 	}
 	confirm := func(intentID string) *runnersv1.UpdateVolumeCheckedRequest {
-		return &runnersv1.UpdateVolumeCheckedRequest{Operation: &runnersv1.UpdateVolumeCheckedRequest_ConfirmRemoval{ConfirmRemoval: &runnersv1.ConfirmVolumeRemoval{IntentId: intentID}}}
+		return &runnersv1.UpdateVolumeCheckedRequest{Operation: &runnersv1.UpdateVolumeCheckedRequest_ConfirmRemoval{ConfirmRemoval: &runnersv1.ConfirmVolumeRemoval{IntentId: intentID, BackendId: lifecycleTestBackend}}}
 	}
 	waitBlocked := func(want int) (int, error) {
 		blocked := 0
@@ -321,5 +321,5 @@ func lifecycleTestInstance(volume *runnersv1.Volume) *runnerv1.VolumeListItem {
 	} else {
 		identity["agent-instance-id"], identity["agent-id"] = volume.OwnerId, volume.GetAgentClassId()
 	}
-	return &runnerv1.VolumeListItem{InstanceId: "pv-" + volume.Meta.Id, VolumeKey: volume.Meta.Id, InstanceUid: uuid.NewString(), IdentityLabels: identity}
+	return &runnerv1.VolumeListItem{InstanceId: "pv-" + volume.Meta.Id, VolumeKey: volume.Meta.Id, InstanceUid: uuid.NewString(), IdentityLabels: identity, BackendId: lifecycleTestBackend}
 }

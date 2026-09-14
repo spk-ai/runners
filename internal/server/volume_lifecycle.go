@@ -118,6 +118,9 @@ func (s *Server) UpdateVolumeChecked(ctx context.Context, req *runnersv1.UpdateV
 
 func applyVolumeOperation(volume *volumeRecord, req *runnersv1.UpdateVolumeCheckedRequest) error {
 	fail := func(reason string) error { return status.Error(codes.FailedPrecondition, reason) }
+	if volume.BoundInstance != nil && !validVolumeBackend(volume.BoundInstance.BackendId) {
+		return fail("volume_backend_reconciliation_required")
+	}
 	switch op := req.GetOperation().(type) {
 	case *runnersv1.UpdateVolumeCheckedRequest_Bind:
 		if volume.Status != volumeStatusProvisioning && volume.Status != volumeStatusActive || volume.RemovalIntent != nil {
@@ -157,6 +160,10 @@ func applyVolumeOperation(volume *volumeRecord, req *runnersv1.UpdateVolumeCheck
 		if !volume.CheckedLifecycle || intent == nil || op.ConfirmRemoval.GetIntentId() != intent.Id ||
 			(volume.Status != volumeStatusDeprovision && volume.Status != volumeStatusDeleted) {
 			return fail("matching_volume_removal_intent_required")
+		}
+		if !validVolumeBackend(op.ConfirmRemoval.GetBackendId()) || op.ConfirmRemoval.GetBackendId() != intent.GetExpected().GetBackendId() ||
+			!proto.Equal(intent.Expected, volume.BoundInstance) {
+			return fail("matching_volume_backend_required")
 		}
 		volume.RemovalIntent = proto.Clone(intent).(*runnersv1.VolumeRemovalIntent)
 		if intent.ConfirmedAt == nil {
@@ -211,12 +218,16 @@ func sameVolumeOwner(record volumeRecord, input volumeInsertInput) bool {
 		record.OwnerKind == input.OwnerKind && record.OwnerID == input.OwnerID
 }
 
+func validVolumeBackend(backend string) bool {
+	return backend != "" && strings.TrimSpace(backend) == backend && len(backend) <= 512
+}
+
 func validateVolumeBinding(record volumeRecord, instance *runnerv1.VolumeListItem) error {
 	// The current checked profile uses k8s-runner's persistent identity contract.
 	// Reject targets the backend cannot remove before making the binding immutable.
 	if instance == nil || instance.GetInstanceId() == "" || len(validation.IsDNS1123Subdomain(instance.GetInstanceId())) != 0 ||
 		instance.GetInstanceUid() == "" || strings.TrimSpace(instance.GetInstanceUid()) != instance.GetInstanceUid() || len(instance.GetInstanceUid()) > 256 ||
-		len(instance.GetIdentityLabels()) == 0 || len(instance.GetIdentityLabels()) > 8 {
+		len(instance.GetIdentityLabels()) == 0 || len(instance.GetIdentityLabels()) > 8 || !validVolumeBackend(instance.GetBackendId()) {
 		return status.Error(codes.InvalidArgument, "complete_volume_instance_required")
 	}
 	for key, value := range instance.IdentityLabels {

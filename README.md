@@ -248,6 +248,27 @@ backend incarnation, retroactively validate existing checked bindings, stop old
 writers or fence in-flight creates/deletes and partitioned nodes. Those checks
 and a coordinated all-writer rollout remain mandatory before real adoption.
 
+## Backend-Bound Volumes
+
+The dependent backend-identity proposal requires every physical binding to carry
+the native backend's immutable `backend_id`. Begin/removal/reopen cannot use an
+unidentified old binding. Confirmation must name the stored backend as well as
+the removal intent; it remains a trusted controller assertion, not a signed
+native receipt. The JSON binding/intent preserves the identity across processes
+and is protected by the existing immutability and revision checks.
+
+Migration `0021_volume_backend_identity.sql` also rejects new backend-less
+bindings through old SQL writers. It validates existing history and fails
+atomically if a prior checked binding lacks the required identity. It performs
+no backfill, adoption or deletion. Such history needs explicit reconciliation;
+do not disable the constraint or invent a namespace UID to force the upgrade.
+
+All 423 race tests pass with both disposable PostgreSQL fixtures enabled.
+The backend migration tests check two owner kinds, refused/repeated upgrades,
+unchanged history, a validated constraint and rejected old SQL writes. Build
+and vet pass. This is not a deployed database upgrade, independent backend
+authentication, workload-start fencing or full A2A acceptance.
+
 ## Helm chart defaults
 
 The chart ships with a DENY-based Istio AuthorizationPolicy. By default,
