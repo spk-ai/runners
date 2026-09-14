@@ -12,6 +12,19 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16.6-alpine
+        env:
+          POSTGRES_DB: runners_volume_acceptance
+          POSTGRES_PASSWORD: runners-test-only
+        ports:
+          - 5432/tcp
+        options: >-
+          --health-cmd "pg_isready -U postgres -d runners_volume_acceptance"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -37,7 +50,9 @@ jobs:
             --path agynio/api/notifications/v1
 
       - name: Run tests
-        run: go test ./...
+        env:
+          AGYN_RUNNERS_VOLUME_TEST_DSN: postgres://postgres:runners-test-only@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/runners_volume_acceptance?sslmode=disable
+        run: go test -race ./... -count=1 -timeout=3m
 
       - name: Build
         run: go build ./...
