@@ -269,6 +269,13 @@ unchanged history, a validated constraint and rejected old SQL writes. Build
 and vet pass. This is not a deployed database upgrade, independent backend
 authentication, workload-start fencing or full A2A acceptance.
 
+## Prepared Workloads
+
+The dependent [prepared-workload registry proposal](PREPARED-WORKLOADS.md) adds
+durable preparation states, exact bindings, revision CAS, immutable owner/backend
+pins and old-writer guards. Native controller integration and coordinated rollout
+are still required; the document records the database/RPC acceptance scope.
+
 ## Helm chart defaults
 
 The chart ships with a DENY-based Istio AuthorizationPolicy. By default,

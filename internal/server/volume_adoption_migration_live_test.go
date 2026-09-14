@@ -101,8 +101,8 @@ func testVolumeAdoptionMigration(t *testing.T, ctx context.Context, base *pgxpoo
 		var data string
 		if err := pool.QueryRow(ctx, `SELECT jsonb_build_object(
             'volumes', (SELECT jsonb_agg(to_jsonb(v) ORDER BY id) FROM volumes v),
-            'workloads', (SELECT jsonb_agg(to_jsonb(w) ORDER BY id) FROM workloads w),
-            'guards', (SELECT jsonb_agg(to_jsonb(g) ORDER BY owner_kind, owner_id) FROM runtime_volume_admission_guards g))::text`).Scan(&data); err != nil {
+            'workloads', (SELECT jsonb_agg(to_jsonb(w) - ARRAY['preparation_phase', 'preparation_revision', 'prepared_backend_id', 'prepared_volume_ids', 'prepared_binding', 'prepared_removal_observation'] ORDER BY id) FROM workloads w),
+            'guards', (SELECT jsonb_agg(to_jsonb(g) - ARRAY['prepared_backend_id', 'prepared_runner_id', 'prepared_organization_id', 'prepared_thread_id', 'prepared_agent_id'] ORDER BY owner_kind, owner_id) FROM runtime_volume_admission_guards g))::text`).Scan(&data); err != nil {
 			t.Fatal(err)
 		}
 		return data

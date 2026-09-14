@@ -256,6 +256,12 @@ func TestLiveVolumeReopen(t *testing.T) {
 	t.Run("checked-lifecycle", func(t *testing.T) {
 		testCheckedVolumeLifecycle(t, ctx, srv, pool, reader, newRequest)
 	})
+	t.Run("prepared-workloads", func(t *testing.T) {
+		testPreparedWorkloads(t, ctx, pool, reader, newRequest)
+	})
+	t.Run("prepared-admission", func(t *testing.T) {
+		testPreparedWorkloadAdmission(t, ctx, pool, reader, newRequest)
+	})
 	t.Run("workload-admission", func(t *testing.T) {
 		testVolumeWorkloadAdmission(t, ctx, srv, pool, reader, newRequest)
 	})
@@ -270,6 +276,9 @@ func TestLiveVolumeReopen(t *testing.T) {
 	})
 	t.Run("backend-migration", func(t *testing.T) {
 		testVolumeBackendMigration(t, ctx, pool.Config())
+	})
+	t.Run("prepared-migration", func(t *testing.T) {
+		testPreparedWorkloadMigration(t, ctx, pool.Config())
 	})
 
 	t.Run("concurrent-reopen", func(t *testing.T) {

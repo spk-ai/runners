@@ -13,6 +13,7 @@ import (
 
 	authorizationv1 "github.com/agynio/runners/.gen/go/agynio/api/authorization/v1"
 	notificationsv1 "github.com/agynio/runners/.gen/go/agynio/api/notifications/v1"
+	runnerv1 "github.com/agynio/runners/.gen/go/agynio/api/runner/v1"
 	runnersv1 "github.com/agynio/runners/.gen/go/agynio/api/runners/v1"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -20,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -48,7 +50,7 @@ const (
 	containerStatusTerminated = "terminated"
 	containerStatusWaiting    = "waiting"
 
-	workloadColumns = `id, runner_id, thread_id, agent_id, organization_id, status, agent_state, failure_reason, failure_message, containers, ziti_identity_id, allocated_cpu_millicores, allocated_ram_bytes, flavor, persistent_shells, instance_id, last_activity_at, last_metering_sampled_at, removed_at, owner_kind, owner_id, created_at, updated_at, removal_confirmed_at`
+	workloadColumns = `id, runner_id, thread_id, agent_id, organization_id, status, agent_state, failure_reason, failure_message, containers, ziti_identity_id, allocated_cpu_millicores, allocated_ram_bytes, flavor, persistent_shells, instance_id, last_activity_at, last_metering_sampled_at, removed_at, owner_kind, owner_id, created_at, updated_at, removal_confirmed_at, preparation_phase, preparation_revision, prepared_backend_id, prepared_volume_ids, prepared_binding, prepared_removal_observation`
 )
 
 type workloadRecord struct {
@@ -74,6 +76,7 @@ type workloadRecord struct {
 	LastMeteringAt         *time.Time
 	OwnerKind              string
 	OwnerID                uuid.UUID
+	Preparation            *runnersv1.PreparedWorkloadLifecycle
 }
 
 type workloadInsertInput struct {
@@ -91,6 +94,7 @@ type workloadInsertInput struct {
 	PersistentShells       bool
 	OwnerKind              string
 	OwnerID                uuid.UUID
+	Preparation            *runnersv1.PreparedWorkloadLifecycle
 }
 
 type workloadUpdateInput struct {
@@ -148,6 +152,10 @@ type containerRecord struct {
 }
 
 func (s *Server) CreateWorkload(ctx context.Context, req *runnersv1.CreateWorkloadRequest) (*runnersv1.CreateWorkloadResponse, error) {
+	return s.createWorkload(ctx, req, nil)
+}
+
+func (s *Server) createWorkload(ctx context.Context, req *runnersv1.CreateWorkloadRequest, preparation *runnersv1.PreparedWorkloadLifecycle) (*runnersv1.CreateWorkloadResponse, error) {
 	id, err := parseUUID(req.GetId())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "id: %v", err)
@@ -217,6 +225,7 @@ func (s *Server) CreateWorkload(ctx context.Context, req *runnersv1.CreateWorklo
 		PersistentShells:       req.GetPersistentShells(),
 		OwnerKind:              ownerKind,
 		OwnerID:                *ownerID,
+		Preparation:            preparation,
 	})
 	if err != nil {
 		return nil, toStatusError(err)
@@ -815,10 +824,10 @@ func (s *Server) insertWorkload(ctx context.Context, input workloadInsertInput) 
 	if len(containersJSON) == 0 {
 		containersJSON = []byte("[]")
 	}
-	row := s.pool.QueryRow(ctx,
-		fmt.Sprintf(`INSERT INTO workloads (id, runner_id, thread_id, agent_id, organization_id, status, containers, ziti_identity_id, allocated_cpu_millicores, allocated_ram_bytes, flavor, persistent_shells, owner_kind, owner_id, last_activity_at, created_at, updated_at)
+	query := fmt.Sprintf(`INSERT INTO workloads (id, runner_id, thread_id, agent_id, organization_id, status, containers, ziti_identity_id, allocated_cpu_millicores, allocated_ram_bytes, flavor, persistent_shells, owner_kind, owner_id, last_activity_at, created_at, updated_at)
 	    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW(), NOW(), NOW())
-	    RETURNING %s`, workloadColumns),
+	    RETURNING %s`, workloadColumns)
+	args := []any{
 		input.ID,
 		input.RunnerID,
 		nullableUUIDValue(input.ThreadID),
@@ -833,7 +842,14 @@ func (s *Server) insertWorkload(ctx context.Context, input workloadInsertInput) 
 		input.PersistentShells,
 		input.OwnerKind,
 		input.OwnerID,
-	)
+	}
+	if input.Preparation != nil {
+		query = fmt.Sprintf(`INSERT INTO workloads (id, runner_id, thread_id, agent_id, organization_id, status, containers, ziti_identity_id, allocated_cpu_millicores, allocated_ram_bytes, flavor, persistent_shells, owner_kind, owner_id, last_activity_at, created_at, updated_at, preparation_phase, preparation_revision, prepared_backend_id, prepared_volume_ids)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW(), NOW(), NOW(), 'reserved', 1, $15, $16)
+            RETURNING %s`, workloadColumns)
+		args = append(args, input.Preparation.BackendId, input.Preparation.VolumeIds)
+	}
+	row := s.pool.QueryRow(ctx, query, args...)
 	workload, err := scanWorkload(row)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -1483,18 +1499,24 @@ func (s *Server) batchUpdateWorkloadSampledAt(ctx context.Context, entries []sam
 
 func scanWorkload(row pgx.Row) (workloadRecord, error) {
 	var (
-		workload           workloadRecord
-		containersData     []byte
-		threadID           nullableUUIDScanner
-		agentID            nullableUUIDScanner
-		failureReason      pgtype.Text
-		failureMessage     pgtype.Text
-		instanceID         pgtype.Text
-		removedAt          pgtype.Timestamptz
-		removalConfirmedAt pgtype.Timestamptz
-		lastMeteringAt     pgtype.Timestamptz
-		ownerKindRaw       any
-		ownerIDRaw         any
+		workload            workloadRecord
+		containersData      []byte
+		threadID            nullableUUIDScanner
+		agentID             nullableUUIDScanner
+		failureReason       pgtype.Text
+		failureMessage      pgtype.Text
+		instanceID          pgtype.Text
+		removedAt           pgtype.Timestamptz
+		removalConfirmedAt  pgtype.Timestamptz
+		lastMeteringAt      pgtype.Timestamptz
+		ownerKindRaw        any
+		ownerIDRaw          any
+		preparationPhase    pgtype.Text
+		preparationRevision int64
+		preparedBackend     pgtype.Text
+		preparedVolumeIDs   []string
+		preparedBinding     []byte
+		preparedRemoval     []byte
 	)
 	if err := row.Scan(
 		&workload.Meta.ID,
@@ -1521,6 +1543,12 @@ func scanWorkload(row pgx.Row) (workloadRecord, error) {
 		&workload.Meta.CreatedAt,
 		&workload.Meta.UpdatedAt,
 		&removalConfirmedAt,
+		&preparationPhase,
+		&preparationRevision,
+		&preparedBackend,
+		&preparedVolumeIDs,
+		&preparedBinding,
+		&preparedRemoval,
 	); err != nil {
 		return workloadRecord{}, err
 	}
@@ -1573,6 +1601,27 @@ func scanWorkload(row pgx.Row) (workloadRecord, error) {
 		value := lastMeteringAt.Time
 		workload.LastMeteringAt = &value
 	}
+	if preparationPhase.Valid {
+		phase, ok := preparationPhases[preparationPhase.String]
+		if !ok || preparationRevision < 1 || !preparedBackend.Valid || !validVolumeBackend(preparedBackend.String) {
+			return workloadRecord{}, fmt.Errorf("invalid stored workload preparation")
+		}
+		workload.Preparation = &runnersv1.PreparedWorkloadLifecycle{
+			Phase: phase, Revision: uint64(preparationRevision), BackendId: preparedBackend.String, VolumeIds: preparedVolumeIDs,
+		}
+		if len(preparedBinding) > 0 {
+			workload.Preparation.Binding = &runnerv1.WorkloadBinding{}
+			if err := protojson.Unmarshal(preparedBinding, workload.Preparation.Binding); err != nil {
+				return workloadRecord{}, fmt.Errorf("decode workload binding: %w", err)
+			}
+		}
+		if len(preparedRemoval) > 0 {
+			workload.Preparation.RemovalObservation = &runnerv1.RemovePreparedWorkloadResponse{}
+			if err := protojson.Unmarshal(preparedRemoval, workload.Preparation.RemovalObservation); err != nil {
+				return workloadRecord{}, fmt.Errorf("decode workload removal: %w", err)
+			}
+		}
+	}
 	return workload, nil
 }
 
@@ -1603,6 +1652,7 @@ func toProtoWorkload(record workloadRecord) (*runnersv1.Workload, error) {
 		Flavor:                 record.Flavor,
 		PersistentShells:       record.PersistentShells,
 		OwnerId:                record.OwnerID.String(),
+		Preparation:            record.Preparation,
 	}
 	ownerKind, err := runtimeOwnerKindFromString(record.OwnerKind)
 	if err != nil {

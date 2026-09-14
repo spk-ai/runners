@@ -62,6 +62,10 @@ func InvalidPageToken(err error) error {
 func toStatusError(err error) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
+		if (pgErr.Code == "55000" || pgErr.Code == "23514") &&
+			(pgErr.ConstraintName == "prepared_workload_lifecycle" || pgErr.ConstraintName == "workloads_preparation_shape" || pgErr.ConstraintName == "runtime_prepared_pin") {
+			return status.Error(codes.FailedPrecondition, "prepared_workload_lifecycle_conflict")
+		}
 		if pgErr.Code == "55000" && pgErr.ConstraintName == "runtime_volume_admission" {
 			return status.Error(codes.FailedPrecondition, "runtime_volume_admission_conflict")
 		}

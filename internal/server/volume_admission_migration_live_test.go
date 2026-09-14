@@ -118,7 +118,7 @@ func testVolumeAdmissionMigration(t *testing.T, ctx context.Context, base *pgxpo
 				var data string
 				if err := pool.QueryRow(ctx, `SELECT jsonb_build_object(
                     'volumes', (SELECT jsonb_agg(to_jsonb(v) ORDER BY id) FROM volumes v),
-                    'workloads', (SELECT jsonb_agg(to_jsonb(w) ORDER BY id) FROM workloads w))::text`).Scan(&data); err != nil {
+                    'workloads', (SELECT jsonb_agg(to_jsonb(w) - ARRAY['preparation_phase', 'preparation_revision', 'prepared_backend_id', 'prepared_volume_ids', 'prepared_binding', 'prepared_removal_observation'] ORDER BY id) FROM workloads w))::text`).Scan(&data); err != nil {
 					t.Fatal(err)
 				}
 				return data
