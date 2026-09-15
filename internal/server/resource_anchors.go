@@ -32,7 +32,12 @@ func validateRegistryResourceAnchor(a *runnerv1.ResourceAnchor, kind runnerv1.Re
 		}
 		labels["agent-instance-id"], labels["agent-id"] = owner.String(), agent.String()
 		if kind == runnerv1.ResourceAnchorKind_RESOURCE_ANCHOR_KIND_WORKLOAD {
-			labels["thread-id"] = thread.String()
+			// Registry thread_id is a legacy instance alias. The native inbox
+			// thread belongs to this immutable workload anchor, not the volume.
+			if !canonicalPreparedUUID(a.IdentityLabels["thread-id"]) {
+				return status.Error(codes.InvalidArgument, "canonical_anchor_thread_required")
+			}
+			labels["thread-id"] = a.IdentityLabels["thread-id"]
 		}
 	case runtimeOwnerKindSandbox:
 		if owner == uuid.Nil || !canonicalPreparedUUID(a.IdentityLabels["sandbox-owner-id"]) {

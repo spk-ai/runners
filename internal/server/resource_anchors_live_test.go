@@ -81,6 +81,9 @@ func testResourceAnchors(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 						t.Fatal(err)
 					}
 					anchor := registryTestAnchor(record, runnerv1.ResourceAnchorKind_RESOURCE_ANCHOR_KIND_WORKLOAD, record.Meta.ID, human)
+					if !sandbox {
+						anchor.IdentityLabels["thread-id"] = uuid.NewString()
+					}
 					var volumeAnchors []*runnerv1.ResourceAnchor
 					for _, v := range claims {
 						a := v.ResourceAnchor

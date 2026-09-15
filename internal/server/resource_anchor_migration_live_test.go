@@ -14,10 +14,14 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
-func testResourceAnchorMigration(t *testing.T, ctx context.Context, base *pgxpool.Config) {
+func newAnchorMigrationPool(t *testing.T, ctx context.Context, base *pgxpool.Config, cutoff string) *pgxpool.Pool {
+	t.Helper()
 	config := base.Copy()
 	admin, err := pgx.ConnectConfig(ctx, config.ConnConfig)
 	if err != nil {
@@ -46,7 +50,7 @@ func testResourceAnchorMigration(t *testing.T, ctx context.Context, base *pgxpoo
 		t.Fatal(err)
 	}
 	for _, entry := range entries {
-		if entry.Name() >= "0023" {
+		if entry.Name() >= cutoff {
 			continue
 		}
 		content, err := migrations.Files.ReadFile(entry.Name())
@@ -60,6 +64,11 @@ func testResourceAnchorMigration(t *testing.T, ctx context.Context, base *pgxpoo
 			t.Fatal(err)
 		}
 	}
+	return pool
+}
+
+func testResourceAnchorMigration(t *testing.T, ctx context.Context, base *pgxpool.Config) {
+	pool := newAnchorMigrationPool(t, ctx, base, "0023")
 	runner := uuid.NewString()
 	if _, err := pool.Exec(ctx, "INSERT INTO runners (id, name, identity_id, service_token_hash, status) VALUES ($1, 'anchor-migration', $2, $3, 'enrolled')", runner, uuid.NewString(), hashServiceToken(uuid.NewString())); err != nil {
 		t.Fatal(err)
@@ -75,6 +84,7 @@ func testResourceAnchorMigration(t *testing.T, ctx context.Context, base *pgxpoo
 				v := &runnersv1.Volume{RunnerId: runner, OrganizationId: raw.OrganizationId, OwnerKind: kind, OwnerId: raw.OwnerId, ThreadId: raw.ThreadId, AgentId: raw.AgentId}
 				var instance *runnerv1.VolumeListItem
 				if !empty {
+					var err error
 					v, err = createMigrationVolume(ctx, pool, raw, true)
 					if err != nil {
 						t.Fatal(err)
@@ -155,5 +165,95 @@ func testResourceAnchorMigration(t *testing.T, ctx context.Context, base *pgxpoo
 		if applied != 1 || workloads != 28 || volumes != 14 || snapshot() != before {
 			t.Fatal("anchor migration changed prepared history or failed to commit exactly once")
 		}
+	}
+}
+
+func testResourceAnchorThreadMigration(t *testing.T, ctx context.Context, base *pgxpool.Config) {
+	pool := newAnchorMigrationPool(t, ctx, base, "0024")
+	runner, owner := uuid.NewString(), uuid.NewString()
+	if _, err := pool.Exec(ctx, "INSERT INTO runners (id, name, identity_id, service_token_hash, status) VALUES ($1, 'anchor-thread-migration', $2, $3, 'enrolled')", runner, uuid.NewString(), hashServiceToken(uuid.NewString())); err != nil {
+		t.Fatal(err)
+	}
+	client, _ := preparedRegistryClient(t, pool)
+	created, err := client.CreateVolumeChecked(ctx, &runnersv1.CreateVolumeCheckedRequest{Volume: &runnersv1.CreateVolumeRequest{
+		Id: uuid.NewString(), RunnerId: runner, OwnerId: owner, ThreadId: owner, AgentId: uuid.NewString(), OrganizationId: uuid.NewString(),
+		OwnerKind: runnersv1.RuntimeOwnerKind_RUNTIME_OWNER_KIND_AGENT_INSTANCE, VolumeId: uuid.NewString(), SizeGb: "1", Status: runnersv1.VolumeStatus_VOLUME_STATUS_PROVISIONING}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := created.Volume
+	reserved, err := client.CreateAnchoredWorkload(ctx, &runnersv1.CreateAnchoredWorkloadRequest{Preparation: preparedCreateRequest(v)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := reserved.Workload
+	record, err := scanWorkload(pool.QueryRow(ctx, "SELECT "+workloadColumns+" FROM workloads WHERE id = $1", w.Meta.Id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	work := registryTestAnchor(record, runnerv1.ResourceAnchorKind_RESOURCE_ANCHOR_KIND_WORKLOAD, record.Meta.ID, "")
+	volume := registryTestAnchor(record, runnerv1.ResourceAnchorKind_RESOURCE_ANCHOR_KIND_VOLUME, uuid.MustParse(v.Meta.Id), "")
+	if _, err := client.UpdateVolumeChecked(ctx, &runnersv1.UpdateVolumeCheckedRequest{Id: v.Meta.Id, ExpectedRevision: 1, Operation: &runnersv1.UpdateVolumeCheckedRequest_BindAnchor{
+		BindAnchor: &runnersv1.BindVolumeResourceAnchor{Anchor: volume, WorkloadId: w.Meta.Id, ExpectedPreparationRevision: 1, ExpectedAnchorRevision: 1}}}); err != nil {
+		t.Fatal(err)
+	}
+	bound, err := client.BindWorkloadResourceAnchors(ctx, &runnersv1.BindWorkloadResourceAnchorsRequest{Id: w.Meta.Id, ExpectedPreparationRevision: 1,
+		ExpectedAnchorRevision: 1, WorkloadAnchor: work, VolumeAnchors: []*runnerv1.ResourceAnchor{volume}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prior, err := client.GetWorkload(ctx, &runnersv1.GetWorkloadRequest{Id: w.Meta.Id})
+	if err != nil || !proto.Equal(prior.GetWorkload().GetPreparation(), bound.Workload.Preparation) {
+		t.Fatal("pre-upgrade read changed the bound resource identities")
+	}
+	actual := proto.Clone(work).(*runnerv1.ResourceAnchor)
+	actual.IdentityLabels["thread-id"] = uuid.NewString()
+	valid := func(anchor *runnerv1.ResourceAnchor) bool {
+		t.Helper()
+		data, err := protojson.Marshal(anchor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var accepted bool
+		if err := pool.QueryRow(ctx, `SELECT valid_registry_resource_anchor($1::jsonb,$2,$3,$4,$5,$6,$7,$8)`, data,
+			anchor.Kind.String(), record.Meta.ID, record.Preparation.BackendId, record.OwnerKind, record.OwnerID, record.AgentID, record.ThreadID).Scan(&accepted); err != nil {
+			t.Fatal(err)
+		}
+		return accepted
+	}
+	if valid(actual) || !valid(work) {
+		t.Fatal("schema 0023 did not reproduce the native thread mismatch")
+	}
+	snapshot := func() string {
+		var data string
+		if err := pool.QueryRow(ctx, `SELECT jsonb_build_object(
+            'volumes', (SELECT jsonb_agg(to_jsonb(v) ORDER BY id) FROM volumes v),
+            'workloads', (SELECT jsonb_agg(to_jsonb(w) ORDER BY id) FROM workloads w),
+            'guards', (SELECT jsonb_agg(to_jsonb(g) ORDER BY owner_kind,owner_id) FROM runtime_volume_admission_guards g))::text`).Scan(&data); err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	before := snapshot()
+	for i := 0; i < 2; i++ {
+		if err := db.ApplyMigrations(ctx, pool); err != nil {
+			t.Fatal(err)
+		}
+		if snapshot() != before || !valid(actual) || !valid(work) {
+			t.Fatal("thread migration changed prior ownership or rejected a valid inbox thread")
+		}
+	}
+	for _, malformed := range []string{"", uuid.Nil.String(), "not-a-thread", uuid.NewString() + " "} {
+		actual.IdentityLabels["thread-id"] = malformed
+		if valid(actual) {
+			t.Fatal("database accepted a noncanonical native inbox thread")
+		}
+	}
+	if _, err := pool.Exec(ctx, `UPDATE workloads SET resource_anchors = jsonb_set(resource_anchors,'{workload,identityLabels,thread-id}',to_jsonb($2::text)) WHERE id=$1`, w.Meta.Id, uuid.NewString()); status.Code(toStatusError(err)) != codes.FailedPrecondition {
+		t.Fatal("thread migration allowed an already-bound inbox thread to change")
+	}
+	read, err := client.GetWorkload(ctx, &runnersv1.GetWorkloadRequest{Id: w.Meta.Id})
+	if err != nil || !proto.Equal(read.GetWorkload(), prior.Workload) || snapshot() != before {
+		t.Fatal("existing anchor or registry legacy identity changed after upgrade")
 	}
 }

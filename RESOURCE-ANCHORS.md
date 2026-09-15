@@ -54,7 +54,7 @@ and [trigger behavior](https://www.postgresql.org/docs/16/trigger-definition.htm
 ## Verification
 
 - API lint and breaking checks against `3b25d03` pass.
-- Full registry race suite: 618 passing test entries, zero failures/skips, with
+- Full registry race suite: 620 passing test entries, zero failures/skips, with
   both real PostgreSQL gates enabled. Build and unfiltered vet pass.
 - Real loopback registry RPCs cover both owner kinds, zero/one/two volumes,
   before-authority rejection, exact bindings, two turns with server replacement,
@@ -70,6 +70,37 @@ and [trigger behavior](https://www.postgresql.org/docs/16/trigger-definition.htm
 - Regression tests reject missing persisted volume anchors and conflicting
   sandbox human-owner labels. Native receipts and authorization are fixtures,
   not real Kubernetes, A2A, authentication or provider-agent acceptance.
+
+## Native Inbox Thread Identity
+
+Controller integration exposed a distinction hidden by the original fixture:
+the orchestrator writes the agent instance ID to the registry's legacy
+`thread_id`, while the assembled runtime's `thread-id` label is the actual
+inbox thread. These identifiers need not match. The original anchor validator
+incorrectly equated them and would reject real agent starts.
+
+The native inbox thread remains a required canonical UUID inside the immutable
+workload anchor. It is checked against the request by the controller and native
+runner, and against that same persisted anchor during recovery. It is not a
+volume owner or an instance-lifetime placement pin. A subsequent workload may
+use another inbox thread without changing the instance, volume anchor or
+historical reservation receipt. Authorization of these identities remains an
+external requirement, not something provided by this shape validator.
+
+Additive migration `0024_resource_anchor_thread_identity.sql` corrects the
+database validator without rewriting `0023` or changing any existing row.
+The upgrade test seeds an anchored workload and volume under the real `0023`
+schema, reproduces rejection of a distinct inbox thread, applies migrations
+twice and compares every workload/volume/owner-guard field. It also rejects
+noncanonical thread IDs and direct mutation of an already-bound thread.
+Real RPC lifecycle fixtures now use different native thread IDs across their
+two turns while preserving registry and volume identity.
+
+The focused regression failed before the source correction. The first upgrade
+assertion compared a mutation response with an enriched GET response; the final
+test compares pre/post GETs and independent SQL snapshots instead. The final
+full race run passes all 620 entries, with both disposable PostgreSQL gates
+enabled. This dependent correction is not installed.
 
 Generate the dependent API locally from the API checkout (the generated `.gen`
 directory is ignored):

@@ -286,6 +286,9 @@ func TestLiveVolumeReopen(t *testing.T) {
 	t.Run("anchor-migration", func(t *testing.T) {
 		testResourceAnchorMigration(t, ctx, pool.Config())
 	})
+	t.Run("anchor-thread-migration", func(t *testing.T) {
+		testResourceAnchorThreadMigration(t, ctx, pool.Config())
+	})
 
 	t.Run("concurrent-reopen", func(t *testing.T) {
 		req := newRequest(false)

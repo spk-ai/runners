@@ -85,6 +85,25 @@ func TestRegistryResourceAnchorIdentity(t *testing.T) {
 	}
 }
 
+func TestResourceAnchorThreadIsNotLegacyInstanceAlias(t *testing.T) {
+	w := registryTestAnchoredWorkload(false, 1)
+	w.ThreadID = w.OwnerID
+	a := w.Preparation.Resources.Workload
+	a.IdentityLabels["thread-id"] = uuid.NewString()
+	if a.IdentityLabels["thread-id"] == w.ThreadID.String() {
+		t.Fatal("fixture did not distinguish inbox thread from legacy instance alias")
+	}
+	if err := validateWorkloadResourceAnchors(w, w.Preparation.Resources); err != nil {
+		t.Fatalf("actual inbox thread was confused with registry thread_id: %v", err)
+	}
+	for _, invalid := range []string{"", uuid.Nil.String(), "not-a-thread", uuid.NewString() + " "} {
+		a.IdentityLabels["thread-id"] = invalid
+		if err := validateWorkloadResourceAnchors(w, w.Preparation.Resources); err == nil {
+			t.Fatal("noncanonical native inbox thread accepted")
+		}
+	}
+}
+
 func TestRegistryResourceAnchorSet(t *testing.T) {
 	for _, sandbox := range []bool{false, true} {
 		w := registryTestAnchoredWorkload(sandbox, 2)
