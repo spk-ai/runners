@@ -67,25 +67,24 @@ func testVolumeAdmissionMigration(t *testing.T, ctx context.Context, base *pgxpo
 			if _, err := pool.Exec(ctx, "INSERT INTO runners (id, name, identity_id, service_token_hash, status) VALUES ($1, 'admission-upgrade', $2, $3, 'enrolled')", runnerID, uuid.NewString(), hashServiceToken(uuid.NewString())); err != nil {
 				t.Fatal(err)
 			}
-			srv := New(Options{Pool: pool})
 			req := &runnersv1.CreateVolumeRequest{
 				Id: uuid.NewString(), RunnerId: runnerID, OrganizationId: uuid.NewString(),
 				ThreadId: uuid.NewString(), AgentId: uuid.NewString(), VolumeId: uuid.NewString(),
 				SizeGb: "1", Status: runnersv1.VolumeStatus_VOLUME_STATUS_PROVISIONING,
 				OwnerKind: runnersv1.RuntimeOwnerKind_RUNTIME_OWNER_KIND_AGENT_INSTANCE, OwnerId: uuid.NewString(),
 			}
-			created, err := srv.CreateVolumeChecked(ctx, &runnersv1.CreateVolumeCheckedRequest{Volume: req})
+			created, err := createMigrationVolume(ctx, pool, req, true)
 			if err != nil {
 				t.Fatal(err)
 			}
-			bound, err := srv.UpdateVolumeChecked(ctx, &runnersv1.UpdateVolumeCheckedRequest{
-				Id: req.Id, ExpectedRevision: created.Volume.LifecycleRevision,
-				Operation: &runnersv1.UpdateVolumeCheckedRequest_Bind{Bind: &runnersv1.BindVolumeInstance{Instance: lifecycleTestInstance(created.Volume)}},
-			})
+			err = adoptionBindSQL(ctx, pool, created, lifecycleTestInstance(created))
 			if err != nil {
 				t.Fatal(err)
 			}
-			v := bound.Volume
+			v, err := readMigrationVolume(ctx, pool, req.Id)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if scenario == "pending-workload" {
 				if err := admissionBeginSQL(ctx, pool, v); err != nil {
 					t.Fatal(err)
@@ -110,15 +109,15 @@ func testVolumeAdmissionMigration(t *testing.T, ctx context.Context, base *pgxpo
 			if scenario == "volume-identity" {
 				second := proto.Clone(req).(*runnersv1.CreateVolumeRequest)
 				second.Id, second.OrganizationId = uuid.NewString(), uuid.NewString()
-				if _, err := srv.CreateVolumeChecked(ctx, &runnersv1.CreateVolumeCheckedRequest{Volume: second}); err != nil {
+				if _, err := createMigrationVolume(ctx, pool, second, true); err != nil {
 					t.Fatal(err)
 				}
 			}
 			snapshot := func() string {
 				var data string
 				if err := pool.QueryRow(ctx, `SELECT jsonb_build_object(
-                    'volumes', (SELECT jsonb_agg(to_jsonb(v) ORDER BY id) FROM volumes v),
-                    'workloads', (SELECT jsonb_agg(to_jsonb(w) - ARRAY['preparation_phase', 'preparation_revision', 'prepared_backend_id', 'prepared_volume_ids', 'prepared_binding', 'prepared_removal_observation'] ORDER BY id) FROM workloads w))::text`).Scan(&data); err != nil {
+                    'volumes', (SELECT jsonb_agg(to_jsonb(v) - ARRAY['resource_anchor', 'anchor_reservation'] ORDER BY id) FROM volumes v),
+                    'workloads', (SELECT jsonb_agg(to_jsonb(w) - ARRAY['resource_anchors', 'preparation_phase', 'preparation_revision', 'prepared_backend_id', 'prepared_volume_ids', 'prepared_binding', 'prepared_removal_observation'] ORDER BY id) FROM workloads w))::text`).Scan(&data); err != nil {
 					t.Fatal(err)
 				}
 				return data
@@ -129,6 +128,9 @@ func testVolumeAdmissionMigration(t *testing.T, ctx context.Context, base *pgxpo
 				err := db.ApplyMigrations(ctx, pool)
 				if valid && err != nil {
 					t.Fatal(err)
+				}
+				if valid {
+					assertNoInferredResourceAnchors(t, ctx, pool)
 				}
 				if !valid {
 					assertAdmissionConflict(t, err)

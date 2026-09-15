@@ -259,6 +259,9 @@ func TestLiveVolumeReopen(t *testing.T) {
 	t.Run("prepared-workloads", func(t *testing.T) {
 		testPreparedWorkloads(t, ctx, pool, reader, newRequest)
 	})
+	t.Run("resource-anchors", func(t *testing.T) {
+		testResourceAnchors(t, ctx, pool, reader, newRequest)
+	})
 	t.Run("prepared-admission", func(t *testing.T) {
 		testPreparedWorkloadAdmission(t, ctx, pool, reader, newRequest)
 	})
@@ -279,6 +282,9 @@ func TestLiveVolumeReopen(t *testing.T) {
 	})
 	t.Run("prepared-migration", func(t *testing.T) {
 		testPreparedWorkloadMigration(t, ctx, pool.Config())
+	})
+	t.Run("anchor-migration", func(t *testing.T) {
+		testResourceAnchorMigration(t, ctx, pool.Config())
 	})
 
 	t.Run("concurrent-reopen", func(t *testing.T) {

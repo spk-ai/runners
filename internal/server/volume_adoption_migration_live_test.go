@@ -65,7 +65,6 @@ func testVolumeAdoptionMigration(t *testing.T, ctx context.Context, base *pgxpoo
 	if _, err := pool.Exec(ctx, "INSERT INTO runners (id, name, identity_id, service_token_hash, status) VALUES ($1, 'adoption-upgrade', $2, $3, 'enrolled')", runnerID, uuid.NewString(), hashServiceToken(uuid.NewString())); err != nil {
 		t.Fatal(err)
 	}
-	srv := New(Options{Pool: pool})
 	var volumes []*runnersv1.Volume
 	for _, kind := range []runnersv1.RuntimeOwnerKind{runnersv1.RuntimeOwnerKind_RUNTIME_OWNER_KIND_AGENT_INSTANCE, runnersv1.RuntimeOwnerKind_RUNTIME_OWNER_KIND_SANDBOX} {
 		for _, phase := range []runnersv1.VolumeStatus{runnersv1.VolumeStatus_VOLUME_STATUS_ACTIVE, runnersv1.VolumeStatus_VOLUME_STATUS_FAILED} {
@@ -75,19 +74,26 @@ func testVolumeAdoptionMigration(t *testing.T, ctx context.Context, base *pgxpoo
 			if kind == runnersv1.RuntimeOwnerKind_RUNTIME_OWNER_KIND_AGENT_INSTANCE {
 				req.ThreadId, req.AgentId = uuid.NewString(), uuid.NewString()
 			}
-			created, err := srv.CreateVolume(ctx, req)
+			created, err := createMigrationVolume(ctx, pool, req, false)
 			if err != nil {
 				t.Fatal(err)
 			}
-			update := &runnersv1.UpdateVolumeRequest{Id: req.Id, Status: &phase}
+			var instance *string
 			if phase == runnersv1.VolumeStatus_VOLUME_STATUS_ACTIVE {
-				update.InstanceId = ptr(lifecycleTestInstance(created.Volume).InstanceId)
+				instance = ptr(lifecycleTestInstance(created).InstanceId)
 			}
-			stored, err := srv.UpdateVolume(ctx, update)
+			phaseName, err := volumeStatusToString(phase)
 			if err != nil {
 				t.Fatal(err)
 			}
-			v := stored.Volume
+			_, err = pool.Exec(ctx, "UPDATE volumes SET status = $2, instance_id = $3, removed_at = CASE WHEN $2 = 'failed' THEN NOW() END WHERE id = $1", req.Id, phaseName, instance)
+			if err != nil {
+				t.Fatal(err)
+			}
+			v, err := readMigrationVolume(ctx, pool, req.Id)
+			if err != nil {
+				t.Fatal(err)
+			}
 			volumes = append(volumes, v)
 			if phase == runnersv1.VolumeStatus_VOLUME_STATUS_ACTIVE {
 				if err := admissionInsertSQL(ctx, pool, &runnersv1.CreateWorkloadRequest{Id: uuid.NewString(), RunnerId: v.RunnerId,
@@ -100,9 +106,9 @@ func testVolumeAdoptionMigration(t *testing.T, ctx context.Context, base *pgxpoo
 	snapshot := func() string {
 		var data string
 		if err := pool.QueryRow(ctx, `SELECT jsonb_build_object(
-            'volumes', (SELECT jsonb_agg(to_jsonb(v) ORDER BY id) FROM volumes v),
-            'workloads', (SELECT jsonb_agg(to_jsonb(w) - ARRAY['preparation_phase', 'preparation_revision', 'prepared_backend_id', 'prepared_volume_ids', 'prepared_binding', 'prepared_removal_observation'] ORDER BY id) FROM workloads w),
-            'guards', (SELECT jsonb_agg(to_jsonb(g) - ARRAY['prepared_backend_id', 'prepared_runner_id', 'prepared_organization_id', 'prepared_thread_id', 'prepared_agent_id'] ORDER BY owner_kind, owner_id) FROM runtime_volume_admission_guards g))::text`).Scan(&data); err != nil {
+            'volumes', (SELECT jsonb_agg(to_jsonb(v) - ARRAY['resource_anchor', 'anchor_reservation'] ORDER BY id) FROM volumes v),
+            'workloads', (SELECT jsonb_agg(to_jsonb(w) - ARRAY['resource_anchors', 'preparation_phase', 'preparation_revision', 'prepared_backend_id', 'prepared_volume_ids', 'prepared_binding', 'prepared_removal_observation'] ORDER BY id) FROM workloads w),
+            'guards', (SELECT jsonb_agg(to_jsonb(g) - ARRAY['resource_anchors_required', 'prepared_backend_id', 'prepared_runner_id', 'prepared_organization_id', 'prepared_thread_id', 'prepared_agent_id'] ORDER BY owner_kind, owner_id) FROM runtime_volume_admission_guards g))::text`).Scan(&data); err != nil {
 			t.Fatal(err)
 		}
 		return data
@@ -112,6 +118,7 @@ func testVolumeAdoptionMigration(t *testing.T, ctx context.Context, base *pgxpoo
 		if err := db.ApplyMigrations(ctx, pool); err != nil {
 			t.Fatal(err)
 		}
+		assertNoInferredResourceAnchors(t, ctx, pool)
 		var applied, guarded bool
 		if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0020_legacy_volume_adoption.sql'),
             EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = 'volumes'::regclass

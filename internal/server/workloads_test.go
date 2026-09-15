@@ -51,6 +51,7 @@ var workloadRowColumns = []string{
 	"updated_at",
 	"removal_confirmed_at",
 	"preparation_phase", "preparation_revision", "prepared_backend_id", "prepared_volume_ids", "prepared_binding", "prepared_removal_observation",
+	"resource_anchors",
 }
 
 type fakeNotificationsClient struct {
@@ -110,7 +111,7 @@ func workloadRows(t *testing.T, records ...workloadRecord) *pgxmock.Rows {
 		phase, backend := pgtype.Text{}, pgtype.Text{}
 		var revision int64
 		var volumeIDs []string
-		var binding, observation []byte
+		var binding, observation, resources []byte
 		if p := record.Preparation; p != nil {
 			phase = pgtype.Text{String: strings.ToLower(strings.TrimPrefix(p.Phase.String(), "PREPARED_WORKLOAD_PHASE_")), Valid: true}
 			backend = pgtype.Text{String: p.BackendId, Valid: true}
@@ -127,8 +128,14 @@ func workloadRows(t *testing.T, records ...workloadRecord) *pgxmock.Rows {
 					t.Fatal(err)
 				}
 			}
+			if p.Resources != nil {
+				resources, err = protojson.Marshal(p.Resources)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
 		}
-		rows.AddRow(record.Meta.ID, record.RunnerID, pgUUIDValue(record.ThreadID), pgUUIDValue(record.AgentID), record.OrganizationID, record.Status, record.AgentState, failureReason, failureMessage, containersJSON, record.ZitiIdentityID, record.AllocatedCPUMillicores, record.AllocatedRAMBytes, record.Flavor, record.PersistentShells, instanceID, record.LastActivityAt, lastMeteringAt, removedAt, record.OwnerKind, record.OwnerID, record.Meta.CreatedAt, record.Meta.UpdatedAt, confirmation, phase, revision, backend, volumeIDs, binding, observation)
+		rows.AddRow(record.Meta.ID, record.RunnerID, pgUUIDValue(record.ThreadID), pgUUIDValue(record.AgentID), record.OrganizationID, record.Status, record.AgentState, failureReason, failureMessage, containersJSON, record.ZitiIdentityID, record.AllocatedCPUMillicores, record.AllocatedRAMBytes, record.Flavor, record.PersistentShells, instanceID, record.LastActivityAt, lastMeteringAt, removedAt, record.OwnerKind, record.OwnerID, record.Meta.CreatedAt, record.Meta.UpdatedAt, confirmation, phase, revision, backend, volumeIDs, binding, observation, resources)
 	}
 	return rows
 }
@@ -461,7 +468,7 @@ func TestListWorkloadsFiltersOrganization(t *testing.T) {
 	containersJSON := []byte("[]")
 
 	rows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 
 	query := fmt.Sprintf("SELECT %s FROM workloads WHERE workloads.organization_id = $1 ORDER BY workloads.created_at DESC, workloads.id ASC LIMIT $2", workloadColumns)
 	mockPool.ExpectQuery(regexp.QuoteMeta(query)).
@@ -537,7 +544,7 @@ func TestListWorkloadsInternalNoIdentity(t *testing.T) {
 	containersJSON := []byte("[]")
 
 	rows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 
 	limit := normalizePageSize(0)
 	query := fmt.Sprintf("SELECT %s FROM workloads ORDER BY workloads.created_at DESC, workloads.id ASC LIMIT $1", workloadColumns)
@@ -606,7 +613,7 @@ func TestListWorkloadsFiltersRunner(t *testing.T) {
 	containersJSON := []byte("[]")
 
 	rows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 
 	query := fmt.Sprintf("SELECT %s FROM workloads WHERE workloads.organization_id = $1 AND workloads.runner_id = ANY($2) ORDER BY workloads.created_at DESC, workloads.id ASC LIMIT $3", workloadColumns)
 	mockPool.ExpectQuery(regexp.QuoteMeta(query)).
@@ -684,7 +691,7 @@ func TestListWorkloadsPendingSample(t *testing.T) {
 	containersJSON := []byte("[]")
 
 	rows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 
 	query := fmt.Sprintf("SELECT %s FROM workloads WHERE workloads.organization_id = $1 AND %s ORDER BY workloads.created_at DESC, workloads.id ASC LIMIT $2", workloadColumns, pendingSampleClause)
 	mockPool.ExpectQuery(regexp.QuoteMeta(query)).
@@ -753,7 +760,7 @@ func TestListWorkloadsCursorPagination(t *testing.T) {
 	}
 
 	rows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 
 	pageSize := int32(2)
 	limit := normalizePageSize(pageSize)
@@ -815,7 +822,7 @@ func TestListWorkloadsSortByAgentQuery(t *testing.T) {
 	sortExpr := "CASE workloads.agent_id WHEN $2 THEN $3 ELSE ''::text END"
 	query := fmt.Sprintf("SELECT %s FROM workloads WHERE workloads.organization_id = $1 AND (%s > $4 OR (%s = $4 AND workloads.id > $5)) ORDER BY %s ASC, workloads.id ASC LIMIT $6", workloadColumns, sortExpr, sortExpr, sortExpr)
 	rows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 	mockPool.ExpectQuery(regexp.QuoteMeta(query)).
 		WithArgs(organizationID, agentID, primary, primary, cursorID, int(limit)+1).
 		WillReturnRows(rows)
@@ -982,9 +989,9 @@ func TestListWorkloadsSortByAgentMixedOwnerPage(t *testing.T) {
 	limit := normalizePageSize(pageSize)
 	firstQuery := fmt.Sprintf("SELECT %s FROM workloads WHERE workloads.organization_id = $1 ORDER BY %s ASC, workloads.id ASC LIMIT $4", workloadColumns, sortExpr)
 	firstRows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(firstSandboxWorkloadID, runnerID, nil, nil, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindSandbox, sandboxID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil)).
-		AddRow(secondSandboxWorkloadID, runnerID, nil, nil, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindSandbox, sandboxID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil)).
-		AddRow(agentWorkloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(firstSandboxWorkloadID, runnerID, nil, nil, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindSandbox, sandboxID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil).
+		AddRow(secondSandboxWorkloadID, runnerID, nil, nil, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindSandbox, sandboxID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil).
+		AddRow(agentWorkloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 	mockPool.ExpectQuery(regexp.QuoteMeta(firstQuery)).
 		WithArgs(organizationID, agentID, agentPrimary, int(limit)+1).
 		WillReturnRows(firstRows)
@@ -1026,7 +1033,7 @@ func TestListWorkloadsSortByAgentMixedOwnerPage(t *testing.T) {
 
 	secondQuery := fmt.Sprintf("SELECT %s FROM workloads WHERE workloads.organization_id = $1 AND (%s > $4 OR (%s = $4 AND workloads.id > $5)) ORDER BY %s ASC, workloads.id ASC LIMIT $6", workloadColumns, sortExpr, sortExpr, sortExpr)
 	secondRows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(agentWorkloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(agentWorkloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 	mockPool.ExpectQuery(regexp.QuoteMeta(secondQuery)).
 		WithArgs(organizationID, agentID, agentPrimary, workloadAgentSortKeyless, secondSandboxWorkloadID, int(limit)+1).
 		WillReturnRows(secondRows)
@@ -1076,7 +1083,7 @@ func TestListWorkloadsSortByRunnerQuery(t *testing.T) {
 	sortColumn := "LOWER(runners.name)"
 	query := fmt.Sprintf("SELECT %s FROM workloads JOIN runners ON workloads.runner_id = runners.id WHERE workloads.organization_id = $1 AND (%s < $2 OR (%s = $2 AND workloads.id > $3)) ORDER BY %s DESC, workloads.id ASC LIMIT $4", workloadColumns, sortColumn, sortColumn, sortColumn)
 	rows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 	mockPool.ExpectQuery(regexp.QuoteMeta(query)).
 		WithArgs(organizationID, primary, cursorID, int(limit)+1).
 		WillReturnRows(rows)
@@ -1227,7 +1234,7 @@ func TestListWorkloadsByThreadFilters(t *testing.T) {
 	limit := normalizePageSize(pageSize)
 
 	rows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 
 	query := fmt.Sprintf("SELECT %s FROM workloads WHERE thread_id = $1 AND agent_id = $2 AND status = ANY($3) ORDER BY created_at DESC, id DESC LIMIT $4", workloadColumns)
 	mockPool.ExpectQuery(regexp.QuoteMeta(query)).
@@ -1267,7 +1274,7 @@ func TestListWorkloadsByThreadInternalNoIdentity(t *testing.T) {
 	limit := normalizePageSize(0)
 
 	rows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 
 	query := fmt.Sprintf("SELECT %s FROM workloads WHERE thread_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2", workloadColumns)
 	mockPool.ExpectQuery(regexp.QuoteMeta(query)).
@@ -1322,7 +1329,7 @@ func TestListWorkloadsByThreadUsesViewWorkloadsRelation(t *testing.T) {
 	limit := normalizePageSize(0)
 
 	rows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 
 	query := fmt.Sprintf("SELECT %s FROM workloads WHERE thread_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2", workloadColumns)
 	mockPool.ExpectQuery(regexp.QuoteMeta(query)).
@@ -1391,9 +1398,9 @@ func TestListWorkloadsByThreadPagination(t *testing.T) {
 	thirdID := uuid.New()
 
 	rows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(firstID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, firstAt, nil, nil, runtimeOwnerKindAgentInstance, firstID, firstAt, firstAt, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil)).
-		AddRow(secondID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, secondAt, nil, nil, runtimeOwnerKindAgentInstance, secondID, secondAt, secondAt, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil)).
-		AddRow(thirdID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, thirdAt, nil, nil, runtimeOwnerKindAgentInstance, thirdID, thirdAt, thirdAt, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(firstID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, firstAt, nil, nil, runtimeOwnerKindAgentInstance, firstID, firstAt, firstAt, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil).
+		AddRow(secondID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, secondAt, nil, nil, runtimeOwnerKindAgentInstance, secondID, secondAt, secondAt, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil).
+		AddRow(thirdID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, thirdAt, nil, nil, runtimeOwnerKindAgentInstance, thirdID, thirdAt, thirdAt, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 
 	query := fmt.Sprintf("SELECT %s FROM workloads WHERE thread_id = $1 AND (created_at < $2 OR (created_at = $2 AND id < $3)) ORDER BY created_at DESC, id DESC LIMIT $4", workloadColumns)
 	mockPool.ExpectQuery(regexp.QuoteMeta(query)).
@@ -1437,8 +1444,8 @@ func TestListWorkloadsByThreadPaginationTieBreak(t *testing.T) {
 	secondID := uuid.MustParse("00000000-0000-0000-0000-000000000000")
 
 	rows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(firstID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, createdAt, nil, nil, runtimeOwnerKindAgentInstance, firstID, createdAt, createdAt, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil)).
-		AddRow(secondID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, createdAt, nil, nil, runtimeOwnerKindAgentInstance, secondID, createdAt, createdAt, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(firstID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, createdAt, nil, nil, runtimeOwnerKindAgentInstance, firstID, createdAt, createdAt, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil).
+		AddRow(secondID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, createdAt, nil, nil, runtimeOwnerKindAgentInstance, secondID, createdAt, createdAt, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 
 	query := fmt.Sprintf("SELECT %s FROM workloads WHERE thread_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2", workloadColumns)
 	mockPool.ExpectQuery(regexp.QuoteMeta(query)).
@@ -1613,7 +1620,7 @@ func TestGetWorkloadRequiresCanViewWorkload(t *testing.T) {
 	containersJSON := []byte("[]")
 
 	rows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 
 	query := fmt.Sprintf("SELECT %s FROM workloads WHERE id = $1", workloadColumns)
 	mockPool.ExpectQuery(regexp.QuoteMeta(query)).WithArgs(workloadID).WillReturnRows(rows)
@@ -1666,7 +1673,7 @@ func TestGetWorkloadReturnsAgentState(t *testing.T) {
 	containersJSON := []byte("[]")
 
 	rows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateIdle, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateIdle, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 
 	query := fmt.Sprintf("SELECT %s FROM workloads WHERE id = $1", workloadColumns)
 	mockPool.ExpectQuery(regexp.QuoteMeta(query)).WithArgs(workloadID).WillReturnRows(rows)
@@ -1724,7 +1731,7 @@ func TestGetWorkloadInternalNoIdentity(t *testing.T) {
 	containersJSON := []byte("[]")
 
 	rows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(workloadID, runnerID, nil, nil, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindSandbox, sandboxID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(workloadID, runnerID, nil, nil, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindSandbox, sandboxID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 
 	query := fmt.Sprintf("SELECT %s FROM workloads WHERE id = $1", workloadColumns)
 	mockPool.ExpectQuery(regexp.QuoteMeta(query)).WithArgs(workloadID).WillReturnRows(rows)
@@ -1923,7 +1930,7 @@ func TestTouchWorkload(t *testing.T) {
 
 	getQuery := fmt.Sprintf(`SELECT %s FROM workloads WHERE id = $1`, workloadColumns)
 	rows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 	mockPool.ExpectQuery(regexp.QuoteMeta(getQuery)).WithArgs(workloadID).WillReturnRows(rows)
 
 	updateQuery := fmt.Sprintf("UPDATE workloads SET agent_state = $1, last_activity_at = NOW(), updated_at = NOW() WHERE id = $2 AND owner_kind = $3 AND owner_id = $4 AND agent_state = $5 RETURNING %s", workloadColumns)
@@ -1964,7 +1971,7 @@ func TestTouchWorkloadRejectsAgentClassIdentity(t *testing.T) {
 
 	getQuery := fmt.Sprintf(`SELECT %s FROM workloads WHERE id = $1`, workloadColumns)
 	rows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(workloadID, runnerID, ownerID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, ownerID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(workloadID, runnerID, ownerID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, ownerID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 	mockPool.ExpectQuery(regexp.QuoteMeta(getQuery)).WithArgs(workloadID).WillReturnRows(rows)
 
 	srv := New(Options{Pool: mockPool})
@@ -1995,7 +2002,7 @@ func TestTouchWorkloadNoPublishWhenProcessing(t *testing.T) {
 
 	getQuery := fmt.Sprintf(`SELECT %s FROM workloads WHERE id = $1`, workloadColumns)
 	rows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 	mockPool.ExpectQuery(regexp.QuoteMeta(getQuery)).WithArgs(workloadID).WillReturnRows(rows)
 
 	updateQuery := fmt.Sprintf("UPDATE workloads SET agent_state = $1, last_activity_at = NOW(), updated_at = NOW() WHERE id = $2 AND owner_kind = $3 AND owner_id = $4 AND agent_state = $5 RETURNING %s", workloadColumns)
@@ -2045,12 +2052,12 @@ func TestTouchWorkloadPublishesUpdateWhenIdle(t *testing.T) {
 
 	getQuery := fmt.Sprintf(`SELECT %s FROM workloads WHERE id = $1`, workloadColumns)
 	getRows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateIdle, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateIdle, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 	mockPool.ExpectQuery(regexp.QuoteMeta(getQuery)).WithArgs(workloadID).WillReturnRows(getRows)
 
 	updateQuery := fmt.Sprintf("UPDATE workloads SET agent_state = $1, last_activity_at = NOW(), updated_at = NOW() WHERE id = $2 AND owner_kind = $3 AND owner_id = $4 AND agent_state = $5 RETURNING %s", workloadColumns)
 	updateRows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 	mockPool.ExpectQuery(regexp.QuoteMeta(updateQuery)).
 		WithArgs(workloadAgentStateProcessing, workloadID, runtimeOwnerKindAgentInstance, threadID, workloadAgentStateIdle).
 		WillReturnRows(updateRows)
@@ -2115,7 +2122,7 @@ func TestTouchWorkloadRequiresOwnerIdentity(t *testing.T) {
 
 	getQuery := fmt.Sprintf(`SELECT %s FROM workloads WHERE id = $1`, workloadColumns)
 	rows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 	mockPool.ExpectQuery(regexp.QuoteMeta(getQuery)).WithArgs(workloadID).WillReturnRows(rows)
 
 	srv := New(Options{Pool: mockPool})
@@ -2145,7 +2152,7 @@ func TestTouchSandboxWorkloadAllowsInternalTouch(t *testing.T) {
 
 	getQuery := fmt.Sprintf(`SELECT %s FROM workloads WHERE id = $1`, workloadColumns)
 	rows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(workloadID, runnerID, nil, nil, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindSandbox, sandboxID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(workloadID, runnerID, nil, nil, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindSandbox, sandboxID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 	mockPool.ExpectQuery(regexp.QuoteMeta(getQuery)).WithArgs(workloadID).WillReturnRows(rows)
 
 	touchQuery := "UPDATE workloads SET last_activity_at = NOW(), updated_at = NOW() WHERE id = $1 AND owner_kind = $2 AND owner_id = $3"
@@ -2180,7 +2187,7 @@ func TestTouchSandboxWorkloadDeniesForwardedIdentity(t *testing.T) {
 
 	getQuery := fmt.Sprintf(`SELECT %s FROM workloads WHERE id = $1`, workloadColumns)
 	rows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(workloadID, runnerID, nil, nil, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindSandbox, sandboxID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(workloadID, runnerID, nil, nil, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindSandbox, sandboxID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 	mockPool.ExpectQuery(regexp.QuoteMeta(getQuery)).WithArgs(workloadID).WillReturnRows(rows)
 
 	srv := New(Options{Pool: mockPool})
@@ -2215,8 +2222,8 @@ func TestSweepWorkloadActivityPublishesUpdates(t *testing.T) {
 
 	updateQuery := fmt.Sprintf("UPDATE workloads SET agent_state = $1, updated_at = NOW() WHERE status = $2 AND agent_state = $3 AND owner_kind = $4 AND last_activity_at < $5 AND removed_at IS NULL RETURNING %s", workloadColumns)
 	rows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(firstID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateIdle, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, lastActivity, nil, nil, runtimeOwnerKindAgentInstance, firstID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil)).
-		AddRow(secondID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateIdle, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, lastActivity, nil, nil, runtimeOwnerKindAgentInstance, secondID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(firstID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateIdle, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, lastActivity, nil, nil, runtimeOwnerKindAgentInstance, firstID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil).
+		AddRow(secondID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateIdle, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, lastActivity, nil, nil, runtimeOwnerKindAgentInstance, secondID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 	mockPool.ExpectQuery(regexp.QuoteMeta(updateQuery)).
 		WithArgs(workloadAgentStateIdle, workloadStatusRunning, workloadAgentStateProcessing, runtimeOwnerKindAgentInstance, cutoff).
 		WillReturnRows(rows)
@@ -2306,14 +2313,14 @@ func TestUpdateWorkload(t *testing.T) {
 	}
 
 	selectRows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, instanceID, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, instanceID, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 	selectQuery := fmt.Sprintf("SELECT %s FROM workloads WHERE id = $1", workloadColumns)
 	mockPool.ExpectQuery(regexp.QuoteMeta(selectQuery)).
 		WithArgs(workloadID).
 		WillReturnRows(selectRows)
 
 	rows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, instanceID, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, instanceID, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 
 	query := fmt.Sprintf("UPDATE workloads SET status = $1, containers = $2, instance_id = $3, updated_at = NOW() WHERE id = $4 RETURNING %s", workloadColumns)
 	mockPool.ExpectQuery(regexp.QuoteMeta(query)).
@@ -2354,7 +2361,7 @@ func TestUpdateWorkloadPublishesNotifications(t *testing.T) {
 	containersJSON := []byte("[]")
 
 	selectRows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusStarting, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusStarting, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 
 	selectQuery := fmt.Sprintf("SELECT %s FROM workloads WHERE id = $1", workloadColumns)
 	mockPool.ExpectQuery(regexp.QuoteMeta(selectQuery)).
@@ -2389,7 +2396,7 @@ func TestUpdateWorkloadPublishesNotifications(t *testing.T) {
 	}
 
 	updateRows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, updatedContainersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, updatedContainersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 
 	updateQuery := fmt.Sprintf("UPDATE workloads SET status = $1, containers = $2, last_activity_at = NOW(), updated_at = NOW() WHERE id = $3 RETURNING %s", workloadColumns)
 	mockPool.ExpectQuery(regexp.QuoteMeta(updateQuery)).
@@ -2478,7 +2485,7 @@ func TestUpdateWorkloadFailureMetadata(t *testing.T) {
 	failureMessage := "back-off"
 
 	selectRows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 
 	selectQuery := fmt.Sprintf("SELECT %s FROM workloads WHERE id = $1", workloadColumns)
 	mockPool.ExpectQuery(regexp.QuoteMeta(selectQuery)).
@@ -2486,7 +2493,7 @@ func TestUpdateWorkloadFailureMetadata(t *testing.T) {
 		WillReturnRows(selectRows)
 
 	updateRows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, failureReason, failureMessage, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, failureReason, failureMessage, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 
 	updateQuery := fmt.Sprintf("UPDATE workloads SET failure_reason = $1, failure_message = $2, updated_at = NOW() WHERE id = $3 RETURNING %s", workloadColumns)
 	mockPool.ExpectQuery(regexp.QuoteMeta(updateQuery)).
@@ -2597,7 +2604,7 @@ func TestUpdateWorkloadSkipsNotificationsWhenContainersUnchanged(t *testing.T) {
 	}
 
 	selectRows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, existingContainersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, existingContainersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 
 	selectQuery := fmt.Sprintf("SELECT %s FROM workloads WHERE id = $1", workloadColumns)
 	mockPool.ExpectQuery(regexp.QuoteMeta(selectQuery)).
@@ -2615,7 +2622,7 @@ func TestUpdateWorkloadSkipsNotificationsWhenContainersUnchanged(t *testing.T) {
 	}
 
 	updateRows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, requestContainersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusRunning, workloadAgentStateProcessing, nil, nil, requestContainersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, nil, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 
 	updateQuery := fmt.Sprintf("UPDATE workloads SET containers = $1, updated_at = NOW() WHERE id = $2 RETURNING %s", workloadColumns)
 	mockPool.ExpectQuery(regexp.QuoteMeta(updateQuery)).
@@ -2712,7 +2719,7 @@ func TestSoftDeleteWorkload(t *testing.T) {
 	containersJSON := []byte("[]")
 
 	rows := pgxmock.NewRows(workloadRowColumns).
-		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusStopped, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, now, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil))
+		AddRow(workloadID, runnerID, threadID, agentID, organizationID, workloadStatusStopped, workloadAgentStateProcessing, nil, nil, containersJSON, "ziti-id", int32(0), int64(0), "", true, nil, now, nil, now, runtimeOwnerKindAgentInstance, threadID, now, now, nil, nil, int64(0), nil, []string(nil), []byte(nil), []byte(nil), nil)
 
 	query := fmt.Sprintf("UPDATE workloads SET status = $1, removed_at = NOW(), updated_at = NOW() WHERE id = $2 RETURNING %s", workloadColumns)
 	mockPool.ExpectQuery(regexp.QuoteMeta(query)).

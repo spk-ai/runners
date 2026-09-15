@@ -50,7 +50,7 @@ const (
 	containerStatusTerminated = "terminated"
 	containerStatusWaiting    = "waiting"
 
-	workloadColumns = `id, runner_id, thread_id, agent_id, organization_id, status, agent_state, failure_reason, failure_message, containers, ziti_identity_id, allocated_cpu_millicores, allocated_ram_bytes, flavor, persistent_shells, instance_id, last_activity_at, last_metering_sampled_at, removed_at, owner_kind, owner_id, created_at, updated_at, removal_confirmed_at, preparation_phase, preparation_revision, prepared_backend_id, prepared_volume_ids, prepared_binding, prepared_removal_observation`
+	workloadColumns = `id, runner_id, thread_id, agent_id, organization_id, status, agent_state, failure_reason, failure_message, containers, ziti_identity_id, allocated_cpu_millicores, allocated_ram_bytes, flavor, persistent_shells, instance_id, last_activity_at, last_metering_sampled_at, removed_at, owner_kind, owner_id, created_at, updated_at, removal_confirmed_at, preparation_phase, preparation_revision, prepared_backend_id, prepared_volume_ids, prepared_binding, prepared_removal_observation, resource_anchors`
 )
 
 type workloadRecord struct {
@@ -848,6 +848,16 @@ func (s *Server) insertWorkload(ctx context.Context, input workloadInsertInput) 
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW(), NOW(), NOW(), 'reserved', 1, $15, $16)
             RETURNING %s`, workloadColumns)
 		args = append(args, input.Preparation.BackendId, input.Preparation.VolumeIds)
+		if input.Preparation.Resources != nil {
+			data, err := protojson.Marshal(input.Preparation.Resources)
+			if err != nil {
+				return workloadRecord{}, err
+			}
+			query = fmt.Sprintf(`INSERT INTO workloads (id, runner_id, thread_id, agent_id, organization_id, status, containers, ziti_identity_id, allocated_cpu_millicores, allocated_ram_bytes, flavor, persistent_shells, owner_kind, owner_id, last_activity_at, created_at, updated_at, preparation_phase, preparation_revision, prepared_backend_id, prepared_volume_ids, resource_anchors)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW(), NOW(), NOW(), 'reserved', 1, $15, $16, $17)
+            RETURNING %s`, workloadColumns)
+			args = append(args, data)
+		}
 	}
 	row := s.pool.QueryRow(ctx, query, args...)
 	workload, err := scanWorkload(row)
@@ -1517,6 +1527,7 @@ func scanWorkload(row pgx.Row) (workloadRecord, error) {
 		preparedVolumeIDs   []string
 		preparedBinding     []byte
 		preparedRemoval     []byte
+		resourceAnchors     []byte
 	)
 	if err := row.Scan(
 		&workload.Meta.ID,
@@ -1549,6 +1560,7 @@ func scanWorkload(row pgx.Row) (workloadRecord, error) {
 		&preparedVolumeIDs,
 		&preparedBinding,
 		&preparedRemoval,
+		&resourceAnchors,
 	); err != nil {
 		return workloadRecord{}, err
 	}
@@ -1621,6 +1633,17 @@ func scanWorkload(row pgx.Row) (workloadRecord, error) {
 				return workloadRecord{}, fmt.Errorf("decode workload removal: %w", err)
 			}
 		}
+		if len(resourceAnchors) > 0 {
+			workload.Preparation.Resources = &runnersv1.WorkloadResourceAnchors{}
+			if err := protojson.Unmarshal(resourceAnchors, workload.Preparation.Resources); err != nil {
+				return workloadRecord{}, fmt.Errorf("decode workload anchors: %w", err)
+			}
+			if err := validateWorkloadResourceAnchors(workload, workload.Preparation.Resources); err != nil {
+				return workloadRecord{}, fmt.Errorf("invalid stored workload anchors: %w", err)
+			}
+		}
+	} else if len(resourceAnchors) != 0 {
+		return workloadRecord{}, fmt.Errorf("anchors require prepared workload")
 	}
 	return workload, nil
 }

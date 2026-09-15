@@ -32,7 +32,7 @@ const (
 	volumeStatusDeleted      = "deleted"
 	volumeStatusFailed       = "failed"
 
-	volumeColumns = `id, instance_id, volume_id, thread_id, runner_id, agent_id, organization_id, size_gb, status, removed_at, last_metering_sampled_at, owner_kind, owner_id, created_at, updated_at, lifecycle_revision, checked_lifecycle, bound_instance, removal_intent`
+	volumeColumns = `id, instance_id, volume_id, thread_id, runner_id, agent_id, organization_id, size_gb, status, removed_at, last_metering_sampled_at, owner_kind, owner_id, created_at, updated_at, lifecycle_revision, checked_lifecycle, bound_instance, removal_intent, resource_anchor, anchor_reservation`
 )
 
 type volumeRecord struct {
@@ -53,6 +53,8 @@ type volumeRecord struct {
 	CheckedLifecycle  bool
 	BoundInstance     *runnerv1.VolumeListItem
 	RemovalIntent     *runnersv1.VolumeRemovalIntent
+	ResourceAnchor    *runnerv1.ResourceAnchor
+	AnchorReservation *runnersv1.VolumeAnchorReservation
 }
 
 type volumeInsertInput struct {
@@ -1648,16 +1650,18 @@ func (s *Server) batchUpdateVolumeSampledAt(ctx context.Context, entries []sampl
 
 func scanVolume(row pgx.Row) (volumeRecord, error) {
 	var (
-		volume         volumeRecord
-		instanceID     pgtype.Text
-		volumeID       nullableUUIDScanner
-		threadID       nullableUUIDScanner
-		agentID        nullableUUIDScanner
-		removedAt      pgtype.Timestamptz
-		lastMeteringAt pgtype.Timestamptz
-		ownerID        nullableUUIDScanner
-		boundJSON      []byte
-		intentJSON     []byte
+		volume          volumeRecord
+		instanceID      pgtype.Text
+		volumeID        nullableUUIDScanner
+		threadID        nullableUUIDScanner
+		agentID         nullableUUIDScanner
+		removedAt       pgtype.Timestamptz
+		lastMeteringAt  pgtype.Timestamptz
+		ownerID         nullableUUIDScanner
+		boundJSON       []byte
+		intentJSON      []byte
+		anchorJSON      []byte
+		reservationJSON []byte
 	)
 	if err := row.Scan(
 		&volume.Meta.ID,
@@ -1679,6 +1683,8 @@ func scanVolume(row pgx.Row) (volumeRecord, error) {
 		&volume.CheckedLifecycle,
 		&boundJSON,
 		&intentJSON,
+		&anchorJSON,
+		&reservationJSON,
 	); err != nil {
 		return volumeRecord{}, err
 	}
@@ -1698,6 +1704,18 @@ func scanVolume(row pgx.Row) (volumeRecord, error) {
 		volume.RemovalIntent = &runnersv1.VolumeRemovalIntent{}
 		if err := protojson.Unmarshal(intentJSON, volume.RemovalIntent); err != nil {
 			return volumeRecord{}, fmt.Errorf("decode volume removal intent: %w", err)
+		}
+	}
+	if len(anchorJSON) > 0 {
+		volume.ResourceAnchor = &runnerv1.ResourceAnchor{}
+		if err := protojson.Unmarshal(anchorJSON, volume.ResourceAnchor); err != nil {
+			return volumeRecord{}, fmt.Errorf("decode volume anchor: %w", err)
+		}
+	}
+	if len(reservationJSON) > 0 {
+		volume.AnchorReservation = &runnersv1.VolumeAnchorReservation{}
+		if err := protojson.Unmarshal(reservationJSON, volume.AnchorReservation); err != nil {
+			return volumeRecord{}, fmt.Errorf("decode volume anchor reservation: %w", err)
 		}
 	}
 	volume.OwnerID = ownerID.UUID
@@ -1741,6 +1759,8 @@ func toProtoVolume(record volumeRecord) (*runnersv1.Volume, error) {
 		CheckedLifecycle:  record.CheckedLifecycle,
 		BoundInstance:     record.BoundInstance,
 		RemovalIntent:     record.RemovalIntent,
+		ResourceAnchor:    record.ResourceAnchor,
+		AnchorReservation: record.AnchorReservation,
 	}
 	ownerKind, err := runtimeOwnerKindFromString(record.OwnerKind)
 	if err != nil {

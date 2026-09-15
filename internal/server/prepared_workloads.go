@@ -34,6 +34,10 @@ func canonicalPreparedUUID(value string) bool {
 }
 
 func (s *Server) CreatePreparedWorkload(ctx context.Context, req *runnersv1.CreatePreparedWorkloadRequest) (*runnersv1.CreatePreparedWorkloadResponse, error) {
+	return s.createPreparedWorkload(ctx, req, false)
+}
+
+func (s *Server) createPreparedWorkload(ctx context.Context, req *runnersv1.CreatePreparedWorkloadRequest, anchored bool) (*runnersv1.CreatePreparedWorkloadResponse, error) {
 	w := req.GetWorkload()
 	if w == nil || w.Status != runnersv1.WorkloadStatus_WORKLOAD_STATUS_STARTING || !validVolumeBackend(req.GetBackendId()) || len(req.GetVolumeIds()) > 64 {
 		return nil, status.Error(codes.InvalidArgument, "prepared_starting_workload_backend_and_volumes_required")
@@ -50,9 +54,13 @@ func (s *Server) CreatePreparedWorkload(ctx context.Context, req *runnersv1.Crea
 			return nil, status.Error(codes.InvalidArgument, "unique_canonical_prepared_volume_ids_required")
 		}
 	}
-	created, err := s.createWorkload(ctx, w, &runnersv1.PreparedWorkloadLifecycle{
+	preparation := &runnersv1.PreparedWorkloadLifecycle{
 		Phase: preparationPhases["reserved"], Revision: 1, BackendId: req.BackendId, VolumeIds: ids,
-	})
+	}
+	if anchored {
+		preparation.Resources = &runnersv1.WorkloadResourceAnchors{Revision: 1}
+	}
+	created, err := s.createWorkload(ctx, w, preparation)
 	if err != nil {
 		return nil, err
 	}
@@ -60,6 +68,10 @@ func (s *Server) CreatePreparedWorkload(ctx context.Context, req *runnersv1.Crea
 }
 
 func (s *Server) UpdatePreparedWorkload(ctx context.Context, req *runnersv1.UpdatePreparedWorkloadRequest) (*runnersv1.UpdatePreparedWorkloadResponse, error) {
+	return s.updatePreparedWorkload(ctx, req, 0)
+}
+
+func (s *Server) updatePreparedWorkload(ctx context.Context, req *runnersv1.UpdatePreparedWorkloadRequest, anchorRevision uint64) (*runnersv1.UpdatePreparedWorkloadResponse, error) {
 	if !canonicalPreparedUUID(req.GetId()) || req.GetExpectedRevision() == 0 || req.GetExpectedRevision() >= math.MaxInt64 || req.GetOperation() == nil {
 		return nil, status.Error(codes.InvalidArgument, "prepared_workload_id_revision_and_operation_required")
 	}
@@ -73,6 +85,13 @@ func (s *Server) UpdatePreparedWorkload(ctx context.Context, req *runnersv1.Upda
 	}
 	if current.Preparation.Revision != req.ExpectedRevision {
 		return nil, status.Error(codes.Aborted, "workload_preparation_revision_changed")
+	}
+	resources := current.Preparation.Resources
+	if (resources == nil) != (anchorRevision == 0) {
+		return nil, status.Error(codes.FailedPrecondition, "matching_preparation_capability_required")
+	}
+	if resources != nil && resources.Revision != anchorRevision {
+		return nil, status.Error(codes.Aborted, "workload_anchor_revision_changed")
 	}
 	next := proto.Clone(current.Preparation).(*runnersv1.PreparedWorkloadLifecycle)
 	if err := applyPreparedWorkloadOperation(current, next, req); err != nil {
@@ -111,6 +130,20 @@ func (s *Server) UpdatePreparedWorkload(ctx context.Context, req *runnersv1.Upda
 		}
 	}
 	phase := strings.ToLower(strings.TrimPrefix(next.Phase.String(), "PREPARED_WORKLOAD_PHASE_"))
+	extraSet, extraWhere := "", ""
+	args := []any{id, int64(req.ExpectedRevision), phase, binding, observation}
+	if next.Resources != nil {
+		if anchorRevision >= math.MaxInt64 {
+			return nil, status.Error(codes.FailedPrecondition, "workload_anchor_revision_exhausted")
+		}
+		next.Resources.Revision++
+		data, err := protojson.Marshal(next.Resources)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "encode_workload_anchors")
+		}
+		extraSet, extraWhere = ", resource_anchors = $6", " AND resource_anchors->>'revision' = $7"
+		args = append(args, data, fmt.Sprint(anchorRevision))
+	}
 	row := s.pool.QueryRow(ctx, fmt.Sprintf(`UPDATE workloads SET
         preparation_phase = $3, preparation_revision = preparation_revision + 1,
         prepared_binding = $4, prepared_removal_observation = $5,
@@ -118,9 +151,8 @@ func (s *Server) UpdatePreparedWorkload(ctx context.Context, req *runnersv1.Upda
         status = CASE WHEN $3 = 'removed' AND status <> 'failed' THEN 'stopped' ELSE status END,
         removed_at = CASE WHEN $3 = 'removed' THEN COALESCE(removed_at, NOW()) ELSE removed_at END,
         removal_confirmed_at = CASE WHEN $3 = 'removed' THEN COALESCE(removal_confirmed_at, NOW()) ELSE removal_confirmed_at END,
-        updated_at = NOW()
-        WHERE id = $1 AND preparation_revision = $2 RETURNING %s`, workloadColumns),
-		id, int64(req.ExpectedRevision), phase, binding, observation)
+        updated_at = NOW()%s
+        WHERE id = $1 AND preparation_revision = $2%s RETURNING %s`, extraSet, extraWhere, workloadColumns), args...)
 	updated, err := scanWorkload(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, status.Error(codes.Aborted, "workload_preparation_revision_changed")
@@ -143,6 +175,9 @@ func applyPreparedWorkloadOperation(current workloadRecord, next *runnersv1.Prep
 	case *runnersv1.UpdatePreparedWorkloadRequest_BeginPreparation:
 		if op.BeginPreparation == nil || phase != preparationPhases["reserved"] || current.Status != workloadStatusStarting {
 			return fail()
+		}
+		if next.Resources != nil && next.Resources.Workload == nil {
+			return status.Error(codes.FailedPrecondition, "durable_resource_anchors_required")
 		}
 		next.Phase = preparationPhases["preparing"]
 	case *runnersv1.UpdatePreparedWorkloadRequest_Bind:
@@ -212,6 +247,18 @@ func validatePreparedWorkloadBinding(current workloadRecord, value *runnerv1.Wor
 		return nil, status.Error(codes.InvalidArgument, "complete_matching_workload_binding_required")
 	}
 	copy := proto.Clone(value).(*runnerv1.WorkloadBinding)
+	if p.Resources == nil {
+		if copy.Anchor != nil {
+			return nil, status.Error(codes.FailedPrecondition, "anchored_preparation_required")
+		}
+	} else {
+		if err := validateWorkloadResourceAnchors(current, p.Resources); err != nil {
+			return nil, err
+		}
+		if p.Resources.Workload == nil || !proto.Equal(copy.Anchor, p.Resources.Workload) {
+			return nil, status.Error(codes.FailedPrecondition, "persisted_workload_anchor_required")
+		}
+	}
 	slices.SortFunc(copy.Volumes, func(a, b *runnerv1.VolumeListItem) int { return strings.Compare(a.GetInstanceId(), b.GetInstanceId()) })
 	ids := make(map[string]bool, len(p.VolumeIds))
 	for _, id := range p.VolumeIds {
@@ -221,6 +268,17 @@ func validatePreparedWorkloadBinding(current workloadRecord, value *runnerv1.Wor
 	for _, v := range copy.Volumes {
 		if v == nil || !canonicalPreparedUUID(v.VolumeKey) || !ids[v.VolumeKey] || v.BackendId != p.BackendId || v.InstanceId == "" || names[v.InstanceId] {
 			return nil, status.Error(codes.InvalidArgument, "complete_unique_prepared_volume_set_required")
+		}
+		var anchor *runnerv1.ResourceAnchor
+		if p.Resources != nil {
+			for _, expected := range p.Resources.Volumes {
+				if expected.ResourceId == v.VolumeKey {
+					anchor = expected
+				}
+			}
+		}
+		if !proto.Equal(v.Anchor, anchor) {
+			return nil, status.Error(codes.FailedPrecondition, "persisted_volume_anchor_required")
 		}
 		delete(ids, v.VolumeKey)
 		names[v.InstanceId] = true

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"strings"
 	"time"
@@ -75,6 +76,11 @@ func (s *Server) UpdateVolumeChecked(ctx context.Context, req *runnersv1.UpdateV
 	if err := applyVolumeOperation(&next, req); err != nil {
 		return nil, err
 	}
+	if op := req.GetBindAnchor(); op != nil {
+		if err := s.checkVolumeAnchorReservation(ctx, current, op); err != nil {
+			return nil, err
+		}
+	}
 	var boundJSON, intentJSON []byte
 	if next.BoundInstance != nil {
 		boundJSON, err = protojson.Marshal(next.BoundInstance)
@@ -92,15 +98,32 @@ func (s *Server) UpdateVolumeChecked(ctx context.Context, req *runnersv1.UpdateV
 	// do not advance lifecycle_revision. Only reopen resets the billing clock.
 	reopen := req.GetReopen() != nil
 	closed := next.Status == volumeStatusDeleted || next.Status == volumeStatusFailed
+	extraSet, extraWhere := "", ""
+	args := []any{id, int64(req.ExpectedRevision), next.Status, next.InstanceID, next.SizeGB, boundJSON, intentJSON, reopen, closed}
+	if op := req.GetBindAnchor(); op != nil {
+		data, err := protojson.Marshal(next.ResourceAnchor)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "encode_volume_anchor")
+		}
+		reservation, err := protojson.Marshal(next.AnchorReservation)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "encode_volume_anchor_reservation")
+		}
+		extraSet = ", resource_anchor = $10, anchor_reservation = $14"
+		extraWhere = ` AND EXISTS (SELECT 1 FROM workloads w WHERE w.id = $11
+            AND w.preparation_revision = $12 AND w.resource_anchors->>'revision' = $13
+            AND w.preparation_phase = 'reserved' AND w.status = 'starting'
+            AND w.resource_anchors->'workload' IS NULL)`
+		args = append(args, data, uuid.MustParse(op.WorkloadId), int64(op.ExpectedPreparationRevision), fmt.Sprint(op.ExpectedAnchorRevision), reservation)
+	}
 	row := s.pool.QueryRow(ctx, fmt.Sprintf(`UPDATE volumes
         SET lifecycle_revision = lifecycle_revision + 1, checked_lifecycle = TRUE,
             status = $3, instance_id = $4, size_gb = $5, bound_instance = $6, removal_intent = $7,
             removed_at = CASE WHEN $8 THEN NULL WHEN $9 THEN COALESCE(removed_at, NOW()) ELSE removed_at END,
             last_metering_sampled_at = CASE WHEN $8 THEN NOW() ELSE last_metering_sampled_at END,
-            updated_at = NOW()
-        WHERE id = $1 AND lifecycle_revision = $2
-        RETURNING %s`, volumeColumns),
-		id, int64(req.ExpectedRevision), next.Status, next.InstanceID, next.SizeGB, boundJSON, intentJSON, reopen, closed)
+            updated_at = NOW()%s
+        WHERE id = $1 AND lifecycle_revision = $2%s
+        RETURNING %s`, extraSet, extraWhere, volumeColumns), args...)
 	updated, err := scanVolume(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, status.Error(codes.Aborted, "volume_lifecycle_revision_changed")
@@ -121,7 +144,21 @@ func applyVolumeOperation(volume *volumeRecord, req *runnersv1.UpdateVolumeCheck
 	if volume.BoundInstance != nil && !validVolumeBackend(volume.BoundInstance.BackendId) {
 		return fail("volume_backend_reconciliation_required")
 	}
+	if volume.ResourceAnchor != nil && req.GetBind() == nil {
+		return fail("anchored_volume_retirement_contract_required")
+	}
 	switch op := req.GetOperation().(type) {
+	case *runnersv1.UpdateVolumeCheckedRequest_BindAnchor:
+		if !volume.CheckedLifecycle || volume.Status != volumeStatusProvisioning || volume.BoundInstance != nil || volume.InstanceID != nil || volume.RemovalIntent != nil {
+			return fail("unbound_checked_volume_required")
+		}
+		a := op.BindAnchor.GetAnchor()
+		if err := validateRegistryResourceAnchor(a, runnerv1.ResourceAnchorKind_RESOURCE_ANCHOR_KIND_VOLUME, volume.Meta.ID, a.GetBackendId(), volume.OwnerKind, volume.OwnerID, volume.AgentID, volume.ThreadID); err != nil {
+			return err
+		}
+		volume.ResourceAnchor = proto.Clone(a).(*runnerv1.ResourceAnchor)
+		volume.AnchorReservation = &runnersv1.VolumeAnchorReservation{WorkloadId: op.BindAnchor.GetWorkloadId(),
+			PreparationRevision: op.BindAnchor.GetExpectedPreparationRevision(), ResourceRevision: op.BindAnchor.GetExpectedAnchorRevision()}
 	case *runnersv1.UpdateVolumeCheckedRequest_Bind:
 		if volume.Status != volumeStatusProvisioning && volume.Status != volumeStatusActive || volume.RemovalIntent != nil {
 			return fail("volume_not_bindable")
@@ -229,6 +266,17 @@ func validateVolumeBinding(record volumeRecord, instance *runnerv1.VolumeListIte
 		instance.GetInstanceUid() == "" || strings.TrimSpace(instance.GetInstanceUid()) != instance.GetInstanceUid() || len(instance.GetInstanceUid()) > 256 ||
 		len(instance.GetIdentityLabels()) == 0 || len(instance.GetIdentityLabels()) > 8 || !validVolumeBackend(instance.GetBackendId()) {
 		return status.Error(codes.InvalidArgument, "complete_volume_instance_required")
+	}
+	if !proto.Equal(record.ResourceAnchor, instance.Anchor) {
+		return status.Error(codes.FailedPrecondition, "persisted_volume_anchor_required")
+	}
+	if a := record.ResourceAnchor; a != nil {
+		if err := validateRegistryResourceAnchor(a, runnerv1.ResourceAnchorKind_RESOURCE_ANCHOR_KIND_VOLUME, record.Meta.ID, instance.BackendId, record.OwnerKind, record.OwnerID, record.AgentID, record.ThreadID); err != nil {
+			return err
+		}
+		if !maps.Equal(a.IdentityLabels, instance.IdentityLabels) {
+			return status.Error(codes.FailedPrecondition, "volume_anchor_identity_mismatch")
+		}
 	}
 	for key, value := range instance.IdentityLabels {
 		switch key {

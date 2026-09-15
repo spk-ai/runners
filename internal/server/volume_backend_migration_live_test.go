@@ -67,7 +67,6 @@ func testVolumeBackendMigration(t *testing.T, ctx context.Context, base *pgxpool
 			if _, err := pool.Exec(ctx, "INSERT INTO runners (id, name, identity_id, service_token_hash, status) VALUES ($1, 'backend-test', $2, $3, 'enrolled')", runner, uuid.NewString(), hashServiceToken(uuid.NewString())); err != nil {
 				t.Fatal(err)
 			}
-			srv := New(Options{Pool: pool})
 			create := func(kind runnersv1.RuntimeOwnerKind) *runnersv1.Volume {
 				t.Helper()
 				req := &runnersv1.CreateVolumeRequest{Id: uuid.NewString(), RunnerId: runner, OrganizationId: uuid.NewString(),
@@ -75,11 +74,11 @@ func testVolumeBackendMigration(t *testing.T, ctx context.Context, base *pgxpool
 				if kind == runnersv1.RuntimeOwnerKind_RUNTIME_OWNER_KIND_AGENT_INSTANCE {
 					req.AgentId, req.ThreadId = uuid.NewString(), uuid.NewString()
 				}
-				created, err := srv.CreateVolumeChecked(ctx, &runnersv1.CreateVolumeCheckedRequest{Volume: req})
+				created, err := createMigrationVolume(ctx, pool, req, true)
 				if err != nil {
 					t.Fatal(err)
 				}
-				return created.Volume
+				return created
 			}
 			for _, kind := range []runnersv1.RuntimeOwnerKind{runnersv1.RuntimeOwnerKind_RUNTIME_OWNER_KIND_AGENT_INSTANCE, runnersv1.RuntimeOwnerKind_RUNTIME_OWNER_KIND_SANDBOX} {
 				v := create(kind)
@@ -93,7 +92,7 @@ func testVolumeBackendMigration(t *testing.T, ctx context.Context, base *pgxpool
 			}
 			snapshot := func() string {
 				var result string
-				if err := pool.QueryRow(ctx, "SELECT jsonb_agg(to_jsonb(v) ORDER BY id)::text FROM volumes v").Scan(&result); err != nil {
+				if err := pool.QueryRow(ctx, "SELECT jsonb_agg(to_jsonb(v) - ARRAY['resource_anchor', 'anchor_reservation'] ORDER BY id)::text FROM volumes v").Scan(&result); err != nil {
 					t.Fatal(err)
 				}
 				return result
@@ -108,6 +107,9 @@ func testVolumeBackendMigration(t *testing.T, ctx context.Context, base *pgxpool
 					}
 				} else if err != nil {
 					t.Fatal(err)
+				}
+				if history == "identified" {
+					assertNoInferredResourceAnchors(t, ctx, pool)
 				}
 				var applied, guarded bool
 				if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '0021_volume_backend_identity.sql'),
