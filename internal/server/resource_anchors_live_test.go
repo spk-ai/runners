@@ -21,7 +21,7 @@ import (
 func testResourceAnchors(t *testing.T, ctx context.Context, pool *pgxpool.Pool, reader *pgx.Conn, newRequest func(bool) *runnersv1.CreateVolumeRequest) {
 	t.Run("reservation-race", func(t *testing.T) { testResourceAnchorReservationRace(t, ctx, pool, reader, newRequest) })
 	for _, sandbox := range []bool{false, true} {
-		for _, volumes := range []int{0, 1, 2} {
+		for _, volumes := range []int{0, 1, 2, 3} {
 			t.Run(fmt.Sprintf("sandbox=%t/volumes=%d", sandbox, volumes), func(t *testing.T) {
 				client, stop := preparedRegistryClient(t, pool)
 				raw := newRequest(sandbox)
@@ -152,6 +152,18 @@ func testResourceAnchors(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 					}
 					for _, op := range []string{"bind", "activate", "active", "remove", "removed"} {
 						step(op, binding)
+						if op == "remove" {
+							for _, v := range claims {
+								_, err := client.UpdateVolumeChecked(ctx, beginRetirementRequest(v))
+								if status.Code(err) != codes.FailedPrecondition {
+									t.Fatalf("retirement bypassed unconfirmed workload: %v", err)
+								}
+								stored, err := scanVolume(reader.QueryRow(ctx, "SELECT "+volumeColumns+" FROM volumes WHERE id=$1", v.Meta.Id))
+								if err != nil || stored.RemovalIntent != nil || stored.LifecycleRevision != int64(v.LifecycleRevision) {
+									t.Fatal("rejected retirement changed persistent state")
+								}
+							}
+						}
 					}
 					if w.RemovalConfirmedAt == nil || !proto.Equal(w.Preparation.Resources.Workload, anchor) {
 						t.Fatal("removed workload lost its ownership history")
@@ -185,6 +197,15 @@ func testResourceAnchors(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 					// Recreate the gRPC server between turns; state comes from PostgreSQL.
 					stop()
 					client, stop = preparedRegistryClient(t, pool)
+				}
+				if len(claims) > 0 {
+					isolation := []pgx.TxIsoLevel{pgx.ReadCommitted, pgx.RepeatableRead, pgx.Serializable}[volumes-1]
+					if !t.Run("retirement-admission", func(t *testing.T) { testAnchoredRetirementAdmission(t, ctx, pool, reader, claims[0], isolation) }) {
+						return
+					}
+				}
+				for _, v := range claims {
+					t.Run("retirement/"+v.Meta.Id, func(t *testing.T) { testAnchoredVolumeRetirementRPC(t, ctx, pool, reader, v) })
 				}
 			})
 		}

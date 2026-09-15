@@ -115,6 +115,13 @@ func (s *Server) UpdateVolumeChecked(ctx context.Context, req *runnersv1.UpdateV
             AND w.preparation_phase = 'reserved' AND w.status = 'starting'
             AND w.resource_anchors->'workload' IS NULL)`
 		args = append(args, data, uuid.MustParse(op.WorkloadId), int64(op.ExpectedPreparationRevision), fmt.Sprint(op.ExpectedAnchorRevision), reservation)
+	} else if req.GetConfirmAnchoredRemoval() != nil {
+		data, err := protojson.Marshal(next.AnchoredRemovalObservation)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "encode_anchored_volume_removal")
+		}
+		extraSet = ", anchored_removal_observation = $10"
+		args = append(args, data)
 	}
 	row := s.pool.QueryRow(ctx, fmt.Sprintf(`UPDATE volumes
         SET lifecycle_revision = lifecycle_revision + 1, checked_lifecycle = TRUE,
@@ -144,10 +151,14 @@ func applyVolumeOperation(volume *volumeRecord, req *runnersv1.UpdateVolumeCheck
 	if volume.BoundInstance != nil && !validVolumeBackend(volume.BoundInstance.BackendId) {
 		return fail("volume_backend_reconciliation_required")
 	}
-	if volume.ResourceAnchor != nil && req.GetBind() == nil {
+	if volume.ResourceAnchor != nil && req.GetBind() == nil && req.GetBeginAnchoredRemoval() == nil && req.GetConfirmAnchoredRemoval() == nil {
 		return fail("anchored_volume_retirement_contract_required")
 	}
 	switch op := req.GetOperation().(type) {
+	case *runnersv1.UpdateVolumeCheckedRequest_BeginAnchoredRemoval:
+		return beginAnchoredVolumeRemoval(volume)
+	case *runnersv1.UpdateVolumeCheckedRequest_ConfirmAnchoredRemoval:
+		return confirmAnchoredVolumeRemoval(volume, op.ConfirmAnchoredRemoval)
 	case *runnersv1.UpdateVolumeCheckedRequest_BindAnchor:
 		if !volume.CheckedLifecycle || volume.Status != volumeStatusProvisioning || volume.BoundInstance != nil || volume.InstanceID != nil || volume.RemovalIntent != nil {
 			return fail("unbound_checked_volume_required")

@@ -144,7 +144,7 @@ func testResourceAnchorMigration(t *testing.T, ctx context.Context, base *pgxpoo
 	snapshot := func() string {
 		var data string
 		if err := pool.QueryRow(ctx, `SELECT jsonb_build_object(
-            'volumes', (SELECT jsonb_agg(to_jsonb(v) - ARRAY['resource_anchor', 'anchor_reservation'] ORDER BY id) FROM volumes v),
+            'volumes', (SELECT jsonb_agg(to_jsonb(v) - ARRAY['resource_anchor', 'anchor_reservation', 'anchored_removal_observation'] ORDER BY id) FROM volumes v),
             'workloads', (SELECT jsonb_agg(to_jsonb(w) - 'resource_anchors' ORDER BY id) FROM workloads w),
             'guards', (SELECT jsonb_agg(to_jsonb(g) - 'resource_anchors_required' ORDER BY owner_kind, owner_id) FROM runtime_volume_admission_guards g))::text`).Scan(&data); err != nil {
 			t.Fatal(err)
@@ -174,7 +174,7 @@ func testResourceAnchorThreadMigration(t *testing.T, ctx context.Context, base *
 	if _, err := pool.Exec(ctx, "INSERT INTO runners (id, name, identity_id, service_token_hash, status) VALUES ($1, 'anchor-thread-migration', $2, $3, 'enrolled')", runner, uuid.NewString(), hashServiceToken(uuid.NewString())); err != nil {
 		t.Fatal(err)
 	}
-	client, _ := preparedRegistryClient(t, pool)
+	client, _ := preparedRegistryClient(t, preRetirementMigrationPool{pool})
 	created, err := client.CreateVolumeChecked(ctx, &runnersv1.CreateVolumeCheckedRequest{Volume: &runnersv1.CreateVolumeRequest{
 		Id: uuid.NewString(), RunnerId: runner, OwnerId: owner, ThreadId: owner, AgentId: uuid.NewString(), OrganizationId: uuid.NewString(),
 		OwnerKind: runnersv1.RuntimeOwnerKind_RUNTIME_OWNER_KIND_AGENT_INSTANCE, VolumeId: uuid.NewString(), SizeGb: "1", Status: runnersv1.VolumeStatus_VOLUME_STATUS_PROVISIONING}})
@@ -224,10 +224,17 @@ func testResourceAnchorThreadMigration(t *testing.T, ctx context.Context, base *
 	if valid(actual) || !valid(work) {
 		t.Fatal("schema 0023 did not reproduce the native thread mismatch")
 	}
+	// Preserve a bound anchored PVC, not only an unused ownership reservation.
+	physical := lifecycleTestInstance(v)
+	physical.Anchor = volume
+	if _, err := client.UpdateVolumeChecked(ctx, &runnersv1.UpdateVolumeCheckedRequest{Id: v.Meta.Id, ExpectedRevision: 2,
+		Operation: &runnersv1.UpdateVolumeCheckedRequest_Bind{Bind: &runnersv1.BindVolumeInstance{Instance: physical}}}); err != nil {
+		t.Fatal(err)
+	}
 	snapshot := func() string {
 		var data string
 		if err := pool.QueryRow(ctx, `SELECT jsonb_build_object(
-            'volumes', (SELECT jsonb_agg(to_jsonb(v) ORDER BY id) FROM volumes v),
+            'volumes', (SELECT jsonb_agg(to_jsonb(v) - 'anchored_removal_observation' ORDER BY id) FROM volumes v),
             'workloads', (SELECT jsonb_agg(to_jsonb(w) ORDER BY id) FROM workloads w),
             'guards', (SELECT jsonb_agg(to_jsonb(g) ORDER BY owner_kind,owner_id) FROM runtime_volume_admission_guards g))::text`).Scan(&data); err != nil {
 			t.Fatal(err)
@@ -241,6 +248,10 @@ func testResourceAnchorThreadMigration(t *testing.T, ctx context.Context, base *
 		}
 		if snapshot() != before || !valid(actual) || !valid(work) {
 			t.Fatal("thread migration changed prior ownership or rejected a valid inbox thread")
+		}
+		var invented int
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM volumes WHERE anchored_removal_observation IS NOT NULL").Scan(&invented); err != nil || invented != 0 {
+			t.Fatal("retirement migration invented native absence")
 		}
 	}
 	for _, malformed := range []string{"", uuid.Nil.String(), "not-a-thread", uuid.NewString() + " "} {

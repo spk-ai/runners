@@ -26,7 +26,7 @@ import (
 
 // Only called under TestLiveVolumeReopen's disposable loopback database gate.
 // Registry RPCs and SQL are real; authorization and native receipts are fixtures.
-func preparedRegistryClient(t *testing.T, pool *pgxpool.Pool) (runnersv1.RunnersServiceClient, func()) {
+func preparedRegistryClient(t *testing.T, pool dbPool) (runnersv1.RunnersServiceClient, func()) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

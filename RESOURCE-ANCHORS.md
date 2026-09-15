@@ -1,5 +1,9 @@
 # Resource Anchor Registry
 
+The dependent [anchored retirement proposal](ANCHORED-VOLUME-RETIREMENT.md)
+adds migration `0025` and durable PVC-and-owner absence receipts. Historical
+anchor verification below retains its original scope.
+
 Registry source and disposable PostgreSQL acceptance verified on 2026-09-15.
 Branch `feat/resource-anchor-registry` is based on registry `e7c42f4` and the
 dependent API branch of the same name, revision `6fe4cab`, based on native API

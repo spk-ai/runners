@@ -32,29 +32,30 @@ const (
 	volumeStatusDeleted      = "deleted"
 	volumeStatusFailed       = "failed"
 
-	volumeColumns = `id, instance_id, volume_id, thread_id, runner_id, agent_id, organization_id, size_gb, status, removed_at, last_metering_sampled_at, owner_kind, owner_id, created_at, updated_at, lifecycle_revision, checked_lifecycle, bound_instance, removal_intent, resource_anchor, anchor_reservation`
+	volumeColumns = `id, instance_id, volume_id, thread_id, runner_id, agent_id, organization_id, size_gb, status, removed_at, last_metering_sampled_at, owner_kind, owner_id, created_at, updated_at, lifecycle_revision, checked_lifecycle, bound_instance, removal_intent, resource_anchor, anchor_reservation, anchored_removal_observation`
 )
 
 type volumeRecord struct {
-	Meta              entityMeta
-	InstanceID        *string
-	VolumeID          uuid.UUID
-	ThreadID          uuid.UUID
-	RunnerID          uuid.UUID
-	AgentID           uuid.UUID
-	OrganizationID    uuid.UUID
-	SizeGB            string
-	Status            string
-	RemovedAt         *time.Time
-	LastMeteringAt    *time.Time
-	OwnerKind         string
-	OwnerID           uuid.UUID
-	LifecycleRevision int64
-	CheckedLifecycle  bool
-	BoundInstance     *runnerv1.VolumeListItem
-	RemovalIntent     *runnersv1.VolumeRemovalIntent
-	ResourceAnchor    *runnerv1.ResourceAnchor
-	AnchorReservation *runnersv1.VolumeAnchorReservation
+	Meta                       entityMeta
+	InstanceID                 *string
+	VolumeID                   uuid.UUID
+	ThreadID                   uuid.UUID
+	RunnerID                   uuid.UUID
+	AgentID                    uuid.UUID
+	OrganizationID             uuid.UUID
+	SizeGB                     string
+	Status                     string
+	RemovedAt                  *time.Time
+	LastMeteringAt             *time.Time
+	OwnerKind                  string
+	OwnerID                    uuid.UUID
+	LifecycleRevision          int64
+	CheckedLifecycle           bool
+	BoundInstance              *runnerv1.VolumeListItem
+	RemovalIntent              *runnersv1.VolumeRemovalIntent
+	ResourceAnchor             *runnerv1.ResourceAnchor
+	AnchorReservation          *runnersv1.VolumeAnchorReservation
+	AnchoredRemovalObservation *runnerv1.RemoveVolumeAnchoredResponse
 }
 
 type volumeInsertInput struct {
@@ -1650,18 +1651,19 @@ func (s *Server) batchUpdateVolumeSampledAt(ctx context.Context, entries []sampl
 
 func scanVolume(row pgx.Row) (volumeRecord, error) {
 	var (
-		volume          volumeRecord
-		instanceID      pgtype.Text
-		volumeID        nullableUUIDScanner
-		threadID        nullableUUIDScanner
-		agentID         nullableUUIDScanner
-		removedAt       pgtype.Timestamptz
-		lastMeteringAt  pgtype.Timestamptz
-		ownerID         nullableUUIDScanner
-		boundJSON       []byte
-		intentJSON      []byte
-		anchorJSON      []byte
-		reservationJSON []byte
+		volume              volumeRecord
+		instanceID          pgtype.Text
+		volumeID            nullableUUIDScanner
+		threadID            nullableUUIDScanner
+		agentID             nullableUUIDScanner
+		removedAt           pgtype.Timestamptz
+		lastMeteringAt      pgtype.Timestamptz
+		ownerID             nullableUUIDScanner
+		boundJSON           []byte
+		intentJSON          []byte
+		anchorJSON          []byte
+		reservationJSON     []byte
+		anchoredRemovalJSON []byte
 	)
 	if err := row.Scan(
 		&volume.Meta.ID,
@@ -1685,6 +1687,7 @@ func scanVolume(row pgx.Row) (volumeRecord, error) {
 		&intentJSON,
 		&anchorJSON,
 		&reservationJSON,
+		&anchoredRemovalJSON,
 	); err != nil {
 		return volumeRecord{}, err
 	}
@@ -1718,6 +1721,12 @@ func scanVolume(row pgx.Row) (volumeRecord, error) {
 			return volumeRecord{}, fmt.Errorf("decode volume anchor reservation: %w", err)
 		}
 	}
+	if len(anchoredRemovalJSON) > 0 {
+		volume.AnchoredRemovalObservation = &runnerv1.RemoveVolumeAnchoredResponse{}
+		if err := protojson.Unmarshal(anchoredRemovalJSON, volume.AnchoredRemovalObservation); err != nil {
+			return volumeRecord{}, fmt.Errorf("decode anchored volume removal: %w", err)
+		}
+	}
 	volume.OwnerID = ownerID.UUID
 	if volumeID.Valid {
 		volume.VolumeID = volumeID.UUID
@@ -1749,18 +1758,19 @@ func toProtoVolume(record volumeRecord) (*runnersv1.Volume, error) {
 		return nil, err
 	}
 	protoVolume := &runnersv1.Volume{
-		Meta:              toProtoEntityMeta(record.Meta),
-		RunnerId:          record.RunnerID.String(),
-		OrganizationId:    record.OrganizationID.String(),
-		SizeGb:            record.SizeGB,
-		Status:            statusValue,
-		OwnerId:           record.OwnerID.String(),
-		LifecycleRevision: uint64(record.LifecycleRevision),
-		CheckedLifecycle:  record.CheckedLifecycle,
-		BoundInstance:     record.BoundInstance,
-		RemovalIntent:     record.RemovalIntent,
-		ResourceAnchor:    record.ResourceAnchor,
-		AnchorReservation: record.AnchorReservation,
+		Meta:                       toProtoEntityMeta(record.Meta),
+		RunnerId:                   record.RunnerID.String(),
+		OrganizationId:             record.OrganizationID.String(),
+		SizeGb:                     record.SizeGB,
+		Status:                     statusValue,
+		OwnerId:                    record.OwnerID.String(),
+		LifecycleRevision:          uint64(record.LifecycleRevision),
+		CheckedLifecycle:           record.CheckedLifecycle,
+		BoundInstance:              record.BoundInstance,
+		RemovalIntent:              record.RemovalIntent,
+		ResourceAnchor:             record.ResourceAnchor,
+		AnchorReservation:          record.AnchorReservation,
+		AnchoredRemovalObservation: record.AnchoredRemovalObservation,
 	}
 	ownerKind, err := runtimeOwnerKindFromString(record.OwnerKind)
 	if err != nil {
