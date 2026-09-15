@@ -116,6 +116,11 @@ func (s *Server) updatePreparedWorkload(ctx context.Context, req *runnersv1.Upda
 			}
 		}
 	}
+	if req.GetConfirmRevocation() != nil {
+		if err := s.checkRevocationVolumeRecords(ctx, current, next.Resources.RevocationObservation); err != nil {
+			return nil, err
+		}
+	}
 	var binding, observation []byte
 	if next.Binding != nil {
 		binding, err = protojson.Marshal(next.Binding)
@@ -181,7 +186,7 @@ func applyPreparedWorkloadOperation(current workloadRecord, next *runnersv1.Prep
 		}
 		next.Phase = preparationPhases["preparing"]
 	case *runnersv1.UpdatePreparedWorkloadRequest_Bind:
-		if next.Binding != nil || phase != preparationPhases["preparing"] && phase != preparationPhases["removing"] {
+		if next.Binding != nil || next.Resources.GetPreparationRevocation() != nil || phase != preparationPhases["preparing"] && phase != preparationPhases["removing"] {
 			return fail()
 		}
 		binding, err := validatePreparedWorkloadBinding(current, op.Bind.GetBinding())
@@ -234,6 +239,10 @@ func applyPreparedWorkloadOperation(current workloadRecord, next *runnersv1.Prep
 			return fail()
 		}
 		next.Phase = preparationPhases["removed"]
+	case *runnersv1.UpdatePreparedWorkloadRequest_RecordRevocation:
+		return recordPreparationRevocation(current, next, op.RecordRevocation)
+	case *runnersv1.UpdatePreparedWorkloadRequest_ConfirmRevocation:
+		return confirmPreparationRevocation(current, next, op.ConfirmRevocation)
 	default:
 		return status.Error(codes.InvalidArgument, "prepared_workload_operation_required")
 	}

@@ -2,6 +2,9 @@
 
 The Runners service manages runner registrations and workload runtime state.
 
+The dependent [preparation-revocation registry](PREPARATION-REVOCATION.md)
+persists interrupted-provisioning recovery without replacing workspace identity.
+
 ## Explicit Workload Removal Confirmation
 
 `removed_at` retains its existing metering semantics: a failed/stopped status

@@ -17,6 +17,7 @@ func TestAdmissionDatabaseStatusErrors(t *testing.T) {
 		want       codes.Code
 	}{
 		{"admission", "55000", "runtime_volume_admission", codes.FailedPrecondition},
+		{"preparation-revocation", "55000", "preparation_revocation_lifecycle", codes.FailedPrecondition},
 		{"serialization", "40001", "", codes.Aborted},
 		{"deadlock", "40P01", "", codes.Aborted},
 		{"unrelated-constraint", "55000", "unrelated", codes.Internal},

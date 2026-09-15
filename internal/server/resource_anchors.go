@@ -62,7 +62,7 @@ func validateWorkloadResourceAnchors(w workloadRecord, resources *runnersv1.Work
 		return status.Error(codes.InvalidArgument, "valid_workload_resource_revision_required")
 	}
 	if resources.Workload == nil {
-		if len(resources.Volumes) != 0 || p.Binding != nil || p.Phase != preparationPhases["reserved"] && p.Phase != preparationPhases["removed"] {
+		if len(resources.Volumes) != 0 || resources.PreparationRevocation != nil || resources.RevocationObservation != nil || p.Binding != nil || p.Phase != preparationPhases["reserved"] && p.Phase != preparationPhases["removed"] {
 			return status.Error(codes.FailedPrecondition, "durable_resource_anchors_required")
 		}
 		return nil
@@ -86,7 +86,7 @@ func validateWorkloadResourceAnchors(w workloadRecord, resources *runnersv1.Work
 		}
 		seen[a.ResourceId] = true
 	}
-	return nil
+	return validateStoredPreparationRevocation(w, resources)
 }
 
 func (s *Server) CreateAnchoredWorkload(ctx context.Context, req *runnersv1.CreateAnchoredWorkloadRequest) (*runnersv1.CreateAnchoredWorkloadResponse, error) {

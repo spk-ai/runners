@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/agynio/runners/internal/db"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -63,6 +65,10 @@ func TestLiveVolumeReopen(t *testing.T) {
 	}
 	t.Cleanup(pool.Close)
 	if err := db.ApplyMigrations(ctx, pool); err != nil {
+		var detail *pgconn.PgError
+		if errors.As(err, &detail) {
+			t.Logf("migration SQL position=%d internal=%d context=%s", detail.Position, detail.InternalPosition, detail.Where)
+		}
 		t.Fatal(err)
 	}
 	reader, err := pgx.ConnectConfig(ctx, config.ConnConfig)
@@ -262,6 +268,9 @@ func TestLiveVolumeReopen(t *testing.T) {
 	t.Run("resource-anchors", func(t *testing.T) {
 		testResourceAnchors(t, ctx, pool, reader, newRequest)
 	})
+	t.Run("preparation-revocation", func(t *testing.T) {
+		testPreparationRevocationRegistry(t, ctx, pool, reader, newRequest)
+	})
 	t.Run("prepared-admission", func(t *testing.T) {
 		testPreparedWorkloadAdmission(t, ctx, pool, reader, newRequest)
 	})
@@ -288,6 +297,9 @@ func TestLiveVolumeReopen(t *testing.T) {
 	})
 	t.Run("anchor-thread-migration", func(t *testing.T) {
 		testResourceAnchorThreadMigration(t, ctx, pool.Config())
+	})
+	t.Run("preparation-revocation-migration", func(t *testing.T) {
+		testPreparationRevocationMigration(t, ctx, pool.Config())
 	})
 
 	t.Run("concurrent-reopen", func(t *testing.T) {
