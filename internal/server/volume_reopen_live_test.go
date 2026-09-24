@@ -268,6 +268,9 @@ func TestLiveVolumeReopen(t *testing.T) {
 	t.Run("resource-anchors", func(t *testing.T) {
 		testResourceAnchors(t, ctx, pool, reader, newRequest)
 	})
+	t.Run("volume-anchor-migration", func(t *testing.T) {
+		testVolumeAnchorMigration(t, ctx, pool, reader, newRequest)
+	})
 	t.Run("preparation-revocation", func(t *testing.T) {
 		testPreparationRevocationRegistry(t, ctx, pool, reader, newRequest)
 	})

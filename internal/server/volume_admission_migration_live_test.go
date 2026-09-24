@@ -116,7 +116,7 @@ func testVolumeAdmissionMigration(t *testing.T, ctx context.Context, base *pgxpo
 			snapshot := func() string {
 				var data string
 				if err := pool.QueryRow(ctx, `SELECT jsonb_build_object(
-                    'volumes', (SELECT jsonb_agg(to_jsonb(v) - ARRAY['resource_anchor', 'anchor_reservation', 'anchored_removal_observation'] ORDER BY id) FROM volumes v),
+                    'volumes', (SELECT jsonb_agg((to_jsonb(v) - 'anchor_adoption') - ARRAY['resource_anchor', 'anchor_reservation', 'anchored_removal_observation'] ORDER BY id) FROM volumes v),
                     'workloads', (SELECT jsonb_agg(to_jsonb(w) - ARRAY['resource_anchors', 'preparation_phase', 'preparation_revision', 'prepared_backend_id', 'prepared_volume_ids', 'prepared_binding', 'prepared_removal_observation'] ORDER BY id) FROM workloads w))::text`).Scan(&data); err != nil {
 					t.Fatal(err)
 				}

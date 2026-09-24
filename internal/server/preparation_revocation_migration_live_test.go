@@ -21,7 +21,7 @@ func testPreparationRevocationMigration(t *testing.T, ctx context.Context, base 
 	if _, err := pool.Exec(ctx, "INSERT INTO runners (id,name,identity_id,service_token_hash,status) VALUES ($1,'revocation-migration',$2,$3,'enrolled')", runner, uuid.NewString(), hashServiceToken(uuid.NewString())); err != nil {
 		t.Fatal(err)
 	}
-	client, stop := preparedRegistryClient(t, pool)
+	client, stop := preparedRegistryClient(t, preAdoptionMigrationPool{pool})
 	defer stop()
 	var interrupted []*runnersv1.Workload
 	var history []*runnersv1.Workload
@@ -100,9 +100,9 @@ func testPreparationRevocationMigration(t *testing.T, ctx context.Context, base 
 		t.Helper()
 		var data string
 		if err := pool.QueryRow(ctx, `SELECT jsonb_build_object(
-            'volumes',(SELECT jsonb_agg(to_jsonb(v) ORDER BY id) FROM volumes v),
+            'volumes',(SELECT jsonb_agg((to_jsonb(v) - 'anchor_adoption') ORDER BY id) FROM volumes v),
             'workloads',(SELECT jsonb_agg(to_jsonb(w) ORDER BY id) FROM workloads w),
-            'guards',(SELECT jsonb_agg(to_jsonb(g) ORDER BY owner_kind,owner_id) FROM runtime_volume_admission_guards g))::text`).Scan(&data); err != nil {
+            'guards',(SELECT jsonb_agg((to_jsonb(g) - 'volume_anchor_migration') ORDER BY owner_kind,owner_id) FROM runtime_volume_admission_guards g))::text`).Scan(&data); err != nil {
 			t.Fatal(err)
 		}
 		return data

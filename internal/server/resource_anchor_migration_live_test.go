@@ -144,9 +144,9 @@ func testResourceAnchorMigration(t *testing.T, ctx context.Context, base *pgxpoo
 	snapshot := func() string {
 		var data string
 		if err := pool.QueryRow(ctx, `SELECT jsonb_build_object(
-            'volumes', (SELECT jsonb_agg(to_jsonb(v) - ARRAY['resource_anchor', 'anchor_reservation', 'anchored_removal_observation'] ORDER BY id) FROM volumes v),
+            'volumes', (SELECT jsonb_agg((to_jsonb(v) - 'anchor_adoption') - ARRAY['resource_anchor', 'anchor_reservation', 'anchored_removal_observation'] ORDER BY id) FROM volumes v),
             'workloads', (SELECT jsonb_agg(to_jsonb(w) - 'resource_anchors' ORDER BY id) FROM workloads w),
-            'guards', (SELECT jsonb_agg(to_jsonb(g) - 'resource_anchors_required' ORDER BY owner_kind, owner_id) FROM runtime_volume_admission_guards g))::text`).Scan(&data); err != nil {
+            'guards', (SELECT jsonb_agg((to_jsonb(g) - 'volume_anchor_migration') - 'resource_anchors_required' ORDER BY owner_kind, owner_id) FROM runtime_volume_admission_guards g))::text`).Scan(&data); err != nil {
 			t.Fatal(err)
 		}
 		return data
@@ -234,9 +234,9 @@ func testResourceAnchorThreadMigration(t *testing.T, ctx context.Context, base *
 	snapshot := func() string {
 		var data string
 		if err := pool.QueryRow(ctx, `SELECT jsonb_build_object(
-            'volumes', (SELECT jsonb_agg(to_jsonb(v) - 'anchored_removal_observation' ORDER BY id) FROM volumes v),
+            'volumes', (SELECT jsonb_agg((to_jsonb(v) - 'anchor_adoption') - 'anchored_removal_observation' ORDER BY id) FROM volumes v),
             'workloads', (SELECT jsonb_agg(to_jsonb(w) ORDER BY id) FROM workloads w),
-            'guards', (SELECT jsonb_agg(to_jsonb(g) ORDER BY owner_kind,owner_id) FROM runtime_volume_admission_guards g))::text`).Scan(&data); err != nil {
+            'guards', (SELECT jsonb_agg((to_jsonb(g) - 'volume_anchor_migration') ORDER BY owner_kind,owner_id) FROM runtime_volume_admission_guards g))::text`).Scan(&data); err != nil {
 			t.Fatal(err)
 		}
 		return data

@@ -92,7 +92,7 @@ func testVolumeBackendMigration(t *testing.T, ctx context.Context, base *pgxpool
 			}
 			snapshot := func() string {
 				var result string
-				if err := pool.QueryRow(ctx, "SELECT jsonb_agg(to_jsonb(v) - ARRAY['resource_anchor', 'anchor_reservation', 'anchored_removal_observation'] ORDER BY id)::text FROM volumes v").Scan(&result); err != nil {
+				if err := pool.QueryRow(ctx, "SELECT jsonb_agg((to_jsonb(v) - 'anchor_adoption') - ARRAY['resource_anchor', 'anchor_reservation', 'anchored_removal_observation'] ORDER BY id)::text FROM volumes v").Scan(&result); err != nil {
 					t.Fatal(err)
 				}
 				return result

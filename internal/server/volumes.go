@@ -32,7 +32,7 @@ const (
 	volumeStatusDeleted      = "deleted"
 	volumeStatusFailed       = "failed"
 
-	volumeColumns = `id, instance_id, volume_id, thread_id, runner_id, agent_id, organization_id, size_gb, status, removed_at, last_metering_sampled_at, owner_kind, owner_id, created_at, updated_at, lifecycle_revision, checked_lifecycle, bound_instance, removal_intent, resource_anchor, anchor_reservation, anchored_removal_observation`
+	volumeColumns = `id, instance_id, volume_id, thread_id, runner_id, agent_id, organization_id, size_gb, status, removed_at, last_metering_sampled_at, owner_kind, owner_id, created_at, updated_at, lifecycle_revision, checked_lifecycle, bound_instance, removal_intent, resource_anchor, anchor_reservation, anchored_removal_observation, anchor_adoption`
 )
 
 type volumeRecord struct {
@@ -56,6 +56,7 @@ type volumeRecord struct {
 	ResourceAnchor             *runnerv1.ResourceAnchor
 	AnchorReservation          *runnersv1.VolumeAnchorReservation
 	AnchoredRemovalObservation *runnerv1.RemoveVolumeAnchoredResponse
+	AnchorAdoption             *runnerv1.VolumeAnchorAdoption
 }
 
 type volumeInsertInput struct {
@@ -1664,6 +1665,7 @@ func scanVolume(row pgx.Row) (volumeRecord, error) {
 		anchorJSON          []byte
 		reservationJSON     []byte
 		anchoredRemovalJSON []byte
+		adoptionJSON        []byte
 	)
 	if err := row.Scan(
 		&volume.Meta.ID,
@@ -1688,6 +1690,7 @@ func scanVolume(row pgx.Row) (volumeRecord, error) {
 		&anchorJSON,
 		&reservationJSON,
 		&anchoredRemovalJSON,
+		&adoptionJSON,
 	); err != nil {
 		return volumeRecord{}, err
 	}
@@ -1725,6 +1728,12 @@ func scanVolume(row pgx.Row) (volumeRecord, error) {
 		volume.AnchoredRemovalObservation = &runnerv1.RemoveVolumeAnchoredResponse{}
 		if err := protojson.Unmarshal(anchoredRemovalJSON, volume.AnchoredRemovalObservation); err != nil {
 			return volumeRecord{}, fmt.Errorf("decode anchored volume removal: %w", err)
+		}
+	}
+	if len(adoptionJSON) > 0 {
+		volume.AnchorAdoption = &runnerv1.VolumeAnchorAdoption{}
+		if err := protojson.Unmarshal(adoptionJSON, volume.AnchorAdoption); err != nil {
+			return volumeRecord{}, fmt.Errorf("decode existing volume adoption: %w", err)
 		}
 	}
 	volume.OwnerID = ownerID.UUID
@@ -1771,6 +1780,7 @@ func toProtoVolume(record volumeRecord) (*runnersv1.Volume, error) {
 		ResourceAnchor:             record.ResourceAnchor,
 		AnchorReservation:          record.AnchorReservation,
 		AnchoredRemovalObservation: record.AnchoredRemovalObservation,
+		AnchorAdoption:             record.AnchorAdoption,
 	}
 	ownerKind, err := runtimeOwnerKindFromString(record.OwnerKind)
 	if err != nil {

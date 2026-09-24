@@ -15,14 +15,21 @@ import (
 // placeholders for new DTO fields; no anchor columns or values are backfilled.
 const preAnchorVolumeColumns = `id, instance_id, volume_id, thread_id, runner_id, agent_id, organization_id,
     size_gb, status, removed_at, last_metering_sampled_at, owner_kind, owner_id, created_at, updated_at,
-    lifecycle_revision, checked_lifecycle, bound_instance, removal_intent, NULL, NULL, NULL`
+    lifecycle_revision, checked_lifecycle, bound_instance, removal_intent, NULL, NULL, NULL, NULL`
 
 // Seed/read schema 0023/0024 without pretending the new observation column
 // exists. Only the historical projection changes; all old writes run unchanged.
 type preRetirementMigrationPool struct{ dbPool }
 
 func (p preRetirementMigrationPool) QueryRow(ctx context.Context, query string, args ...any) pgx.Row {
-	projection := strings.TrimSuffix(volumeColumns, ", anchored_removal_observation") + ", NULL"
+	projection := strings.TrimSuffix(volumeColumns, ", anchored_removal_observation, anchor_adoption") + ", NULL, NULL"
+	return p.dbPool.QueryRow(ctx, strings.ReplaceAll(query, volumeColumns, projection), args...)
+}
+
+type preAdoptionMigrationPool struct{ dbPool }
+
+func (p preAdoptionMigrationPool) QueryRow(ctx context.Context, query string, args ...any) pgx.Row {
+	projection := strings.TrimSuffix(volumeColumns, ", anchor_adoption") + ", NULL"
 	return p.dbPool.QueryRow(ctx, strings.ReplaceAll(query, volumeColumns, projection), args...)
 }
 
@@ -56,8 +63,8 @@ func assertNoInferredResourceAnchors(t *testing.T, ctx context.Context, pool *pg
 	var invented int
 	if err := pool.QueryRow(ctx, `SELECT
         (SELECT count(*) FROM workloads WHERE resource_anchors IS NOT NULL) +
-        (SELECT count(*) FROM volumes WHERE resource_anchor IS NOT NULL OR anchor_reservation IS NOT NULL OR anchored_removal_observation IS NOT NULL) +
-        (SELECT count(*) FROM runtime_volume_admission_guards WHERE resource_anchors_required)`).Scan(&invented); err != nil {
+        (SELECT count(*) FROM volumes WHERE resource_anchor IS NOT NULL OR anchor_reservation IS NOT NULL OR anchored_removal_observation IS NOT NULL OR anchor_adoption IS NOT NULL) +
+        (SELECT count(*) FROM runtime_volume_admission_guards WHERE resource_anchors_required OR volume_anchor_migration IS NOT NULL)`).Scan(&invented); err != nil {
 		t.Fatal(err)
 	}
 	if invented != 0 {
