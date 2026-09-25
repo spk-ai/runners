@@ -12,20 +12,17 @@
 - Keep implementation invariants beside their handwritten Go or protobuf owner.
   Update those comments and focused tests when behavior changes; Markdown holds
   operations, cross-repository decisions, security boundaries and dated evidence.
-- Start at `docs/catalog.json`. Maintain its version-1 document entries
-  (`id`, `path`, `title`, `purpose`, `kind`) for meaningful Markdown and
-  `AGENTS.md` only, using repository-relative paths. Do not index generated code.
-- When a compatible structural navigator is available, discover repositories and
-  components first, then batch-inspect selected owners and their related tests.
-  Otherwise use native declarations, imports, RPC types and adjacent tests;
-  `git diff upstream/main...HEAD` (or the reviewed base) identifies the changes.
-  Do not add a navigator dependency or machine-specific paths to this repository.
-  Navigator commands are `repos [--worktrees]`,
-  `scan --repo REPO`, `inspect REPO::path` and `docs --repo REPO`.
-  IDs here are `api`, `runners`, `orchestrator`, `k8s-runner` and `gateway`.
-  Worktrees use Git-discovered basenames, optionally selected by `--worktree`.
-  At genuine cross-repo owners, optional `@see repo::extensionless/component`
-  references can aid navigation; same-repo `@see` paths retain the extension.
+- Keep `docs/catalog.json` as the version-1 index of meaningful Markdown and
+  `AGENTS.md`, not a source inventory. Preserve its stable document IDs.
+- Use the workspace Navigator first when available: `repos [--worktrees]`,
+  then `scan --repo runners`, then batch `inspect runners::owner runners::related-owner`.
+  Use `docs --repo runners` and `doc runners::document-id` for guides. Worktrees use
+  Git-discovered basenames, optionally selected by `--worktree`.
+  Standalone contributors need no Navigator: use `git diff upstream/main...HEAD`
+  (or the reviewed base), `rg`, Go/Buf tools and adjacent tests.
+  Do not copy Navigator tooling, dependencies or machine-specific paths here.
+  Optional cross-repo `@see repo::extensionless/component` links belong at genuine
+  contract owners; same-repo `@see` paths retain the source extension.
 - Preserve dated verification, failures, skips and dependency revisions as
   historical evidence; do not silently turn them into current acceptance claims.
 - Do not edit generated sources or applied SQL migrations, including comments.

@@ -1,22 +1,16 @@
 # Preparation Revocation Registry
 
 Dependent proposal requiring the matching API, native runner and controller.
-Migration `0026_preparation_revocation.sql` is additive: it replaces lifecycle
-guards without rewriting existing workload, workspace or admission history.
 Existing repository licensing is unchanged.
 
-The separate proof/confirmation transitions and complete workspace partition
-checks live beside `recordPreparationRevocation` and
-`checkRevocationVolumeRecords` in
-[preparation_revocation.go](internal/server/preparation_revocation.go).
+See [preparation_revocation.go](internal/server/preparation_revocation.go) for
+the revocation contract.
 The caller's [dual-revision update](internal/server/prepared_workloads.go)
 explains the read-to-CAS boundary; the original
 [revocation migration](migrations/0026_preparation_revocation.sql) rechecks under
 owner serialization.
 
-Old writers cannot erase proof, skip confirmation, overwrite a known workspace
-UID, reopen/delete the history or use the unanchored update API. This does not
-protect against a database administrator dropping the guards. Native receipts
+Database guards do not protect against an administrator dropping them. Native receipts
 are trusted authenticated-controller inputs, not cryptographically verified
 statements inside PostgreSQL.
 

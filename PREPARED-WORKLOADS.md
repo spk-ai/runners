@@ -7,21 +7,21 @@ published capability, a database rollout, or a complete A2A integration.
 
 ## Contract Owners
 
-The phase machine, authorization order, CAS, late binding and removal confirmation
-live beside `createPreparedWorkload` and `applyPreparedWorkloadOperation` in
-[prepared_workloads.go](internal/server/prepared_workloads.go).
+See [prepared_workloads.go](internal/server/prepared_workloads.go) for the
+lifecycle contract.
 Checked workspace identities belong to
 [volume_lifecycle.go](internal/server/volume_lifecycle.go); dual revisions belong
 to [resource_anchors.go](internal/server/resource_anchors.go).
 Database enforcement is linked from those callers to the original
 [prepared-workload migration](migrations/0022_prepared_workloads.sql).
 
-Migration application neither adopts legacy workloads nor invents physical
-evidence. Preserve historical billing and identity, audit/drain incompatible
+Preserve historical billing and identity, audit/drain incompatible
 writers and coordinate controller/native/API rollout. Physical workspace
 retirement remains separate from compute release.
 
 ## Verification
+
+Historical acceptance of the prepared-registry proposal above:
 
 - Build and vet pass. All **538 tests including subtests** pass with `-race` and
   both disposable PostgreSQL fixtures enabled; no individual test is skipped.
@@ -66,21 +66,19 @@ authentication are not production configuration.
 
 ## Remaining Integration
 
+These are the original proposal's integration gates, not a current completion list.
+
 - Migrate both agent and sandbox controllers, their generated clients and any
   Gateway routing/policy that must expose the distinct methods. Keep all prepared
   paths fail-closed on Unimplemented, never fallback to name-only methods.
-- Persist/controller-reconcile preparation intent, lost native prepare replies,
-  late gated creates, delayed holds and interrupted startup Secret ownership.
-  PREPARING with an unknown binding deliberately retains admission; there is no
-  safe generic-error abort or native observation/recovery capability here yet.
+- Reconcile late gated creates, delayed holds and interrupted startup Secret
+  ownership across the controller/native boundary.
 - Authenticate runner routes and authorize workload owners; enforce all native
   writers and admission mutations. The observation is a stored trusted caller
   assertion, not a signed receipt. A privileged direct native call or database
   administrator is not fenced by registry CAS.
-- Cancellation that wins before begin activation prevents new authorization.
-  After ACTIVATING, native activation may already be in flight. Retain admission
-  until exact physical absence, and separately fence partitioned nodes/storage,
-  forced deletes and cloned backend identities.
+- Separately fence partitioned nodes/storage, forced deletes and cloned backend
+  identities; registry admission is not that fence.
 - Audit/reconcile legacy data, drain incompatible writers, roll out compatible
   migrations/clients together, and rerun complete A2A/model acceptance. This
   source verification does not authorize automatic adoption or production use.

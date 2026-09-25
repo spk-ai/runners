@@ -5,8 +5,7 @@ The Runners service manages runner registrations and workload runtime state.
 See [AGENTS.md](AGENTS.md) for source owners and contribution rules, and
 [docs/catalog.json](docs/catalog.json) for operational and historical documents.
 
-The dependent [preparation-revocation registry](PREPARATION-REVOCATION.md)
-persists interrupted-provisioning recovery without replacing workspace identity.
+See [preparation revocation](PREPARATION-REVOCATION.md) for recovery rollout limits.
 
 ## Explicit Workload Removal Confirmation
 
@@ -31,12 +30,9 @@ go test ./...
 go test -race ./...
 ```
 
-`TestLiveWorkloadRemovalConfirmation` additionally uses a disposable PostgreSQL
-database via `AGYN_RUNNERS_REMOVAL_TEST_DSN`. It refuses non-loopback hosts and
-databases not named `a2a_removal_acceptance`; it creates and removes its own
-schema. It verifies the real migration, authenticated runner failure reporting,
-explicit confirmation, retry preservation and the reopening constraint. It
-makes no agent/model calls and must not target the deployed platform database.
+The opt-in [database fixture](internal/server/workload_removal_live_test.go)
+requires `AGYN_RUNNERS_REMOVAL_TEST_DSN` pointing to a disposable loopback
+database named `a2a_removal_acceptance`. Never target the deployed platform database.
 
 Rollout requires the updated orchestrator and regenerated Gateway as well as
 this service. Historical workloads need inspection, not a timestamp backfill.
@@ -59,6 +55,8 @@ chmod +x apply.sh
 See [bootstrap](https://github.com/agynio/bootstrap) for details.
 
 ### Run from sources
+
+Use the repository's [DevSpace workflow](devspace.yaml) after bootstrap:
 
 ```bash
 # Deploy once (exit when healthy)
@@ -93,26 +91,20 @@ named `runners_volume_acceptance` on `127.0.0.1`, then run:
 go test -race ./internal/server -run '^TestLiveVolumeReopen$' -count=1 -timeout=3m
 ```
 
-The test applies the real migrations in its own uniquely named schema and drops
-only that schema. It checks same-owner recovery, canonical/deprecated fields,
-ownership mismatches, nullable sandbox identity, unchanged conflicts, and
-overlapping PostgreSQL updates. It makes no agent/model calls. Never point it at
-the deployed platform database.
+Assertions and fixture isolation are in
+[volume_lifecycle_live_test.go](internal/server/volume_lifecycle_live_test.go).
+Never point it at the deployed platform database.
 
 ### Checked volume lifecycle
 
-The checked lifecycle contract lives beside `CreateVolumeChecked`,
-`UpdateVolumeChecked` and `applyVolumeOperation` in
+The checked lifecycle contract lives in
 [volume_lifecycle.go](internal/server/volume_lifecycle.go). Its comments link the
 original [lifecycle migration](migrations/0018_checked_volume_lifecycle.sql) and
 later admission, adoption and backend guards. Apply reviewed additive migrations;
 never edit an applied migration to explain or change the contract.
 
-The existing disposable PostgreSQL test now includes agent/sandbox checked
-lifecycles, independent-reader persistence, new-server-object intent recovery,
-raw old-SQL rejection, stale retries, guarded reopen and eight simultaneously
-blocked checked updates with exactly one successful CAS. It does not prove a
-real runner's absence, process-level failover or a deployed coordinated rollout.
+The database fixture above does not prove a real runner's absence, process-level
+failover or a deployed coordinated rollout.
 
 Drain/audit all writers before activation; legacy records are not automatically
 adopted. Service authorization, late backend creates, partitioned nodes,
@@ -120,25 +112,19 @@ storage-level fencing and checked-record retention remain production work.
 
 ### Workload admission and volume removal
 
-Migration `0019_volume_workload_admission.sql` closes the interval between a
-controller's idle-workload scan and its checked begin-removal update. It requires
-both the workload confirmation migration `0017` and checked-volume migration
-`0018`; this branch is based on their combined integration `0492121`, not the
-independent checked-volume contribution alone.
+The original admission contribution required migrations `0017` and `0018`,
+based on combined integration `0492121`, not the independent checked-volume
+contribution alone.
 
 The owner guard and checked lifecycle invariants are documented at the Go
 callers in [volume_lifecycle.go](internal/server/volume_lifecycle.go) and
 [workloads.go](internal/server/workloads.go), with the original
 [admission migration](migrations/0019_volume_workload_admission.sql).
-The guard key is the runtime owner, not a global organization/class lock.
+Audit/drain before rollout and preserve guard rows. An admission rejection is
+not permission to replay a possibly completed backend side effect.
 
-Migration locks both tables while installing the guards. It rejects existing
-checked owners with contradictory deletion/workload state, identity mismatches
-or multiple unconfirmed workloads. It neither modifies historical rows nor
-infers absence. Audit/drain before rollout, preserve guard rows, and use new
-workload IDs after confirmed removal. A database admission rejection maps to
-`FailedPrecondition`; serialization/deadlock errors map to `Aborted`. Neither
-permits automatically replaying a backend side effect.
+Historical admission acceptance and reproduction instructions follow; they are
+not a new run or a compatibility manifest for the current branch.
 
 `TestLiveVolumeReopen/workload-admission` uses the existing disposable database
 gate and exercises real registry methods with a stub authorization writer, plus
@@ -160,10 +146,8 @@ authenticate the controller's removal evidence or the selected runner backend.
 
 ### Explicit legacy adoption
 
-The dependent `feat/legacy-volume-adoption` branch adds migration
-`0020_legacy_volume_adoption.sql` on top of `f05b479`. It reuses the proposed
-`UpdateVolumeChecked(bind)` RPC; it does not add an adoption endpoint or
-automatically import existing records.
+The original `feat/legacy-volume-adoption` contribution used migration
+`0020_legacy_volume_adoption.sql` on top of `f05b479`.
 
 Audited legacy bind, immutable backend/owner validation and explicit checked
 reopen are owned by [volume_lifecycle.go](internal/server/volume_lifecycle.go)
@@ -171,6 +155,8 @@ and the original [adoption migration](migrations/0020_legacy_volume_adoption.sql
 This operation is not a lasting deployment drain or proof against late creates.
 The current identity profile uses the native runner's Kubernetes validators;
 other backends require an explicit identity contract.
+
+Historical acceptance of that contribution:
 
 `TestLiveVolumeReopen/legacy-adoption` covers both owner kinds, all five
 unconfirmed workload states, known-name provenance, unchanged rejected writes,
@@ -190,16 +176,14 @@ and a coordinated all-writer rollout remain mandatory before real adoption.
 
 ## Backend-Bound Volumes
 
-Backend identity and matching confirmation requirements live beside
-`validateVolumeBinding` and `applyVolumeOperation` in
+Backend identity and confirmation contracts live in
 [volume_lifecycle.go](internal/server/volume_lifecycle.go). The registry trusts
 authenticated controller observations; it does not contact the native runner.
 
-Migration `0021_volume_backend_identity.sql` also rejects new backend-less
-bindings through old SQL writers. It validates existing history and fails
-atomically if a prior checked binding lacks the required identity. It performs
-no backfill, adoption or deletion. Such history needs explicit reconciliation;
+Backend-less history needs explicit reconciliation before migration `0021`;
 do not disable the constraint or invent a namespace UID to force the upgrade.
+
+Historical acceptance of the backend-identity contribution:
 
 All 423 race tests pass with both disposable PostgreSQL fixtures enabled.
 The backend migration tests check two owner kinds, refused/repeated upgrades,
@@ -209,15 +193,13 @@ authentication, workload-start fencing or full A2A acceptance.
 
 ## Prepared Workloads
 
-The dependent [prepared-workload registry proposal](PREPARED-WORKLOADS.md) adds
-durable preparation states, exact bindings, revision CAS, immutable owner/backend
-pins and old-writer guards. Native controller integration and coordinated rollout
-are still required; the document records the database/RPC acceptance scope.
+The [prepared-workload guide](PREPARED-WORKLOADS.md) records cross-repository
+rollout requirements and historical database/RPC acceptance limits.
 
 ## Helm chart defaults
 
-The chart ships with a DENY-based Istio AuthorizationPolicy. By default,
-`authorizationPolicy.identityServiceAccounts` allows in-mesh callers that
-forward `x-identity-id` (`gateway`, `expose`, `notifications`, `chat`).
-Override the list if your deployment uses different service accounts (for
-example, add `agents-orchestrator-e2e` for E2E runs).
+Review [chart values](charts/runners/values.yaml) and the
+[authorization policy](charts/runners/templates/authorizationpolicy.yaml) against
+your deployment's service accounts before rollout, including E2E identities.
+The policy assumes trusted mesh identity and trustworthy forwarded identity
+headers; source compatibility does not establish that trust boundary.

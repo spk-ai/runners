@@ -1,18 +1,17 @@
 # Anchored Volume Retirement Registry
 
 Dependent on `feat/resource-anchor-registry` and the matching API
-`feat/anchored-volume-removal`. This proposal is not installed. Migration `0025`
-is additive; it does not rewrite migrations `0023` or `0024`, infer native
-absence, adopt unidentified volumes or drop historical ownership.
+`feat/anchored-volume-removal`. This proposal is not installed.
 
-Retirement intent, original provenance requirements and immutable absence history
-live beside `beginAnchoredVolumeRemoval` and `confirmAnchoredVolumeRemoval` in
-[anchored_volume_removal.go](internal/server/anchored_volume_removal.go).
+See [anchored_volume_removal.go](internal/server/anchored_volume_removal.go)
+for the retirement contract.
 The checked caller links the original
 [retirement migration](migrations/0025_anchored_volume_removal.sql).
 Ordinary idle compute release does not request workspace retirement.
 
 ## Verification
+
+Historical acceptance of the anchored-retirement proposal above:
 
 The full race suite passes 752 entries with both disposable PostgreSQL gates
 enabled and no skips. Tests exercise real migrations, RPCs and independent SQL
