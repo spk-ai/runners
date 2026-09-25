@@ -113,6 +113,12 @@ func validateStoredPreparationRevocation(w workloadRecord, resources *runnersv1.
 	return nil
 }
 
+// recordPreparationRevocation retains the native journal/anchor receipt on an
+// unbound anchored REMOVING workload. Recording alone neither releases admission
+// nor invents a Pod binding. Confirmation is a separate dual-revision write;
+// ../../migrations/0026_preparation_revocation.sql protects both proofs as history.
+// @see k8s-runner::internal/server/preparation_revocation
+// @see orchestrator::internal/reconciler/preparation_revocation
 func recordPreparationRevocation(current workloadRecord, next *runnersv1.PreparedWorkloadLifecycle, op *runnersv1.RecordPreparationRevocation) error {
 	if op == nil || len(op.ProtoReflect().GetUnknown()) != 0 || next.Phase != preparationPhases["removing"] || next.Binding != nil ||
 		next.Resources == nil || next.Resources.PreparationRevocation != nil || next.Resources.RevocationObservation != nil {
@@ -161,6 +167,12 @@ func validateRevocationVolumeRecord(w workloadRecord, anchor *runnerv1.ResourceA
 	return nil
 }
 
+// checkRevocationVolumeRecords requires found PVCs to be checked-bound first;
+// absent PVCs retain the original revision-2 unbound allocation receipt, even if
+// reserved by an earlier attempt. A known UID cannot become first provision.
+// Migration 0026 repeats this under the admission owner lock at UPDATE, so a
+// competing bind after these reads invalidates stale absence. Native evidence
+// remains a trusted caller assertion, not independently authenticated proof.
 func (s *Server) checkRevocationVolumeRecords(ctx context.Context, w workloadRecord, observation *runnerv1.ObservePreparationRevocationResponse) error {
 	found := map[string]*runnerv1.VolumeListItem{}
 	for _, v := range observation.Volumes {

@@ -37,6 +37,10 @@ func (s *Server) CreatePreparedWorkload(ctx context.Context, req *runnersv1.Crea
 	return s.createPreparedWorkload(ctx, req, false)
 }
 
+// createPreparedWorkload reserves STARTING/RESERVED at revision 1, not native
+// execution authority. ../../migrations/0022_prepared_workloads.sql admits only
+// one unconfirmed owner workload, even with no mounts, and permanently pins
+// owner/backend identity independently of retained workload history.
 func (s *Server) createPreparedWorkload(ctx context.Context, req *runnersv1.CreatePreparedWorkloadRequest, anchored bool) (*runnersv1.CreatePreparedWorkloadResponse, error) {
 	w := req.GetWorkload()
 	if w == nil || w.Status != runnersv1.WorkloadStatus_WORKLOAD_STATUS_STARTING || !validVolumeBackend(req.GetBackendId()) || len(req.GetVolumeIds()) > 64 {
@@ -173,6 +177,18 @@ func (s *Server) updatePreparedWorkload(ctx context.Context, req *runnersv1.Upda
 	return &runnersv1.UpdatePreparedWorkloadResponse{Workload: w}, nil
 }
 
+// applyPreparedWorkloadOperation owns RESERVED -> PREPARING -> BOUND -> ACTIVATING
+// -> ACTIVE. Persist authority before each native call and checked volumes before
+// the Pod binding. Any post-reservation nonterminal phase can enter REMOVING; a
+// late binding there permits cleanup only. Only RESERVED can abort without native
+// evidence. Bound removal needs exact-binding ABSENT; unbound anchored revocation
+// uses separate proof/observation writes. Lost CAS replies require exact-record
+// reads, never preparation or agent-message replay. Status/billing reports do not
+// authorize execution or release admission; removal preserves failure status.
+// Migration 0022 repeats identity/phase checks after its owner-guard write using
+// fresh trigger reads, not cross-table FOR UPDATE locks. The CAS retains the first
+// confirmation and advances preparation plus, when anchored, resource revision.
+// @see api::proto/agynio/api/runners/v1/runners
 func applyPreparedWorkloadOperation(current workloadRecord, next *runnersv1.PreparedWorkloadLifecycle, req *runnersv1.UpdatePreparedWorkloadRequest) error {
 	fail := func() error { return status.Error(codes.FailedPrecondition, "invalid_prepared_workload_transition") }
 	phase := next.Phase

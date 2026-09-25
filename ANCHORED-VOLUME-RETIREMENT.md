@@ -5,19 +5,12 @@ Dependent on `feat/resource-anchor-registry` and the matching API
 is additive; it does not rewrite migrations `0023` or `0024`, infer native
 absence, adopt unidentified volumes or drop historical ownership.
 
-`begin_anchored_removal` requires an active, checked, bound anchored volume. It
-persists the complete immutable target and an explicit anchored intent. Repeated
-begin operations preserve that intent; stale revisions fail CAS. Existing
-owner-admission guards serialize retirement against workload reservation, even
-when the new workload omits volumes. Unconfirmed predecessor workloads block
-retirement and another owner can still progress.
-
-`confirm_anchored_removal` requires the original intent and exact native ABSENT
-response for the persisted backend and volume owner. The registry retains that
-response with the bound PVC, owner, original reservation and confirmation time.
-SQL guards reject old confirmation writes, history deletion, owner substitution
-and reopening. A repeated confirmation preserves the first receipt and time.
-Ordinary idle compute release does not request this operation.
+Retirement intent, original provenance requirements and immutable absence history
+live beside `beginAnchoredVolumeRemoval` and `confirmAnchoredVolumeRemoval` in
+[anchored_volume_removal.go](internal/server/anchored_volume_removal.go).
+The checked caller links the original
+[retirement migration](migrations/0025_anchored_volume_removal.sql).
+Ordinary idle compute release does not request workspace retirement.
 
 ## Verification
 

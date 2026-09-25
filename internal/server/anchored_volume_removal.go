@@ -31,6 +31,11 @@ func validAnchoredRemovalIntent(volume *volumeRecord) bool {
 		len(i.ProtoReflect().GetUnknown()) == 0 && proto.Equal(i.Expected, volume.BoundInstance)
 }
 
+// beginAnchoredVolumeRemoval reserves workspace retirement, not idle compute
+// release. The current validator requires allocation provenance; adoption does not
+// fabricate that reservation. Persist via UpdateVolumeChecked before native removal.
+// ../../migrations/0025_anchored_volume_removal.sql shares owner-admission guards,
+// excluding every unconfirmed predecessor, including starts with no mounts.
 func beginAnchoredVolumeRemoval(volume *volumeRecord) error {
 	if err := validateBoundAnchoredVolume(volume); err != nil {
 		return err
@@ -63,6 +68,11 @@ func validateAnchoredVolumeRemovalObservation(expected *runnerv1.VolumeListItem,
 	return nil
 }
 
+// confirmAnchoredVolumeRemoval accepts the original intent and exact native
+// PVC-and-owner ABSENT. Retries retain the first receipt/time, binding, anchor and
+// reservation. Migration 0025 rejects old confirmation, history deletion and reopen;
+// current absence is not future-write fencing.
+// @see k8s-runner::internal/server/anchored_volume_removal
 func confirmAnchoredVolumeRemoval(volume *volumeRecord, op *runnersv1.ConfirmAnchoredVolumeRemoval) error {
 	intent := volume.RemovalIntent
 	if !validAnchoredRemovalIntent(volume) || op.GetIntentId() != intent.Id || op == nil || len(op.ProtoReflect().GetUnknown()) != 0 ||

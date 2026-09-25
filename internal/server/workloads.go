@@ -878,6 +878,14 @@ func (s *Server) insertWorkload(ctx context.Context, input workloadInsertInput) 
 	return workload, nil
 }
 
+// updateWorkload separates billing end from physical-removal confirmation. Only
+// an explicit terminal-workload lifecycle write sets the first confirmation;
+// runner status reports and logical deletion do not infer it.
+// ../../migrations/0017_workload_removal_confirmation.sql leaves old rows unverified
+// and prevents reopening confirmed work. Migration 0019 retains admission for
+// unconfirmed failures/stops and prevents identity/deletion bypasses.
+// @see orchestrator::internal/reconciler/workload_reconcile
+// @see gateway::internal/gateway/runners
 func (s *Server) updateWorkload(ctx context.Context, input workloadUpdateInput) (workloadRecord, error) {
 	clauses := make([]string, 0, 6)
 	args := make([]any, 0, 6)

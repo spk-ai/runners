@@ -5,67 +5,21 @@ the API's `feat/prepared-workload-registry`, which extends the native prepared
 API (`53e0817`). Original repository licenses are unchanged. This is not a
 published capability, a database rollout, or a complete A2A integration.
 
-## Contract
+## Contract Owners
 
-`CreatePreparedWorkload` creates a STARTING, RESERVED record with revision 1,
-the backend identity and a complete set of registry volume IDs. It does not
-authorize a native call. The owner must have only compatible checked volumes
-and no unconfirmed predecessor; this applies even when the mount set is empty.
-The same transaction permanently pins the owner's backend and persistent
-identity. Confirmed workload history may be garbage collected without enabling
-legacy admission or silently moving that owner to another backend.
+The phase machine, authorization order, CAS, late binding and removal confirmation
+live beside `createPreparedWorkload` and `applyPreparedWorkloadOperation` in
+[prepared_workloads.go](internal/server/prepared_workloads.go).
+Checked workspace identities belong to
+[volume_lifecycle.go](internal/server/volume_lifecycle.go); dual revisions belong
+to [resource_anchors.go](internal/server/resource_anchors.go).
+Database enforcement is linked from those callers to the original
+[prepared-workload migration](migrations/0022_prepared_workloads.sql).
 
-`UpdatePreparedWorkload` requires the expected revision and exactly one command:
-
-| Command | Required State | Result |
-| --- | --- | --- |
-| Begin preparation | RESERVED and STARTING | PREPARING; native preparation may now be attempted once |
-| Bind | PREPARING, each checked volume already bound | BOUND with immutable native workload and complete volume identities |
-| Begin activation | BOUND and STARTING | ACTIVATING; authorize activation of that exact binding |
-| Confirm activation | ACTIVATING, identical binding | ACTIVE, without changing observed workload status |
-| Begin removal | PREPARING, BOUND, ACTIVATING or ACTIVE | REMOVING, irreversibly excludes new activation authorization |
-| Late bind | REMOVING without a binding | Remains REMOVING; capture exact identity for cleanup only |
-| Confirm removal | REMOVING with a binding, exact-binding native ABSENT | REMOVED, persisted observation and server-time removal confirmation |
-| Abort reservation | RESERVED only | REMOVED without a native binding; no preparation was authorized |
-
-Each successful command advances revision once. A lost response requires a read
-of the exact workload ID and validation of its owner/backend/state, not a new
-native preparation or agent-message replay. Concurrent CAS failures return
-Aborted. Duplicate creation retains the existing primary key; callers must not
-infer ownership merely from AlreadyExists. Billing/status reports do not advance
-the preparation revision, authorize activation, or confirm physical removal.
-Removal preserves an existing failure status.
-
-Bind uses the same volume validation as checked-volume binding and compares
-every physical identity with the stored active checked volume. Volume IDs are
-canonical and unique; binding volumes use the native runner's name ordering.
-The database repeats set/identity checks under owner serialization before bind
-and activation. It cannot prove the caller included every desired mount; the
-controller must derive the complete set from the assembled native request and
-reject a native response with any missing, added or substituted volume.
-
-## Database Enforcement
-
-Migration `0022_prepared_workloads.sql` atomically installs nullable preparation
-fields, an immutable owner pin and both workload/volume guards. It neither
-adopts legacy workloads nor invents bindings or absence. Existing records keep
-their status, billing, removal evidence and all other historical values.
-
-The owner guard uses the existing real row-write pattern, followed by separate
-reads in VOLATILE trigger functions. A stale repeatable-read or serializable
-transaction cannot authorize from an old snapshot. No new cross-table `FOR
-UPDATE` acquisition is introduced. PostgreSQL documents the relevant
-[snapshot/serialization behavior](https://www.postgresql.org/docs/current/transaction-iso.html),
-[VOLATILE function snapshots](https://www.postgresql.org/docs/current/xfunc-volatility.html)
-and [transactional trigger execution](https://www.postgresql.org/docs/current/trigger-definition.html).
-
-Old SQL cannot replace a prepared binding, skip phases or bypass revision
-checks, confirm removal using the billing field, discard an unconfirmed
-workload, or clear/move a pinned owner. Old CreateWorkload is excluded for opted-in
-owners. Unconfirmed preparations protect their volume records even after a
-failure report; failing a still-needed provisioning record would otherwise make
-late binding impossible. Physical workspace deletion remains a separate checked
-operation after compute absence, not a side effect of task compute release.
+Migration application neither adopts legacy workloads nor invents physical
+evidence. Preserve historical billing and identity, audit/drain incompatible
+writers and coordinate controller/native/API rollout. Physical workspace
+retirement remains separate from compute release.
 
 ## Verification
 

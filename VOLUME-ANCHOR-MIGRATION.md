@@ -5,24 +5,13 @@ document and a separate `volumes.anchor_adoption` receipt. The dependent API
 branch is `feat/volume-anchor-migration`; the operator coordinator lives in the
 matching agents-orchestrator branch. Native runner `0ed8c5c` supplies adoption.
 
-`BeginVolumeAnchorMigration` requires the complete drained owner inventory and
-exact lifecycle revisions. Its transaction serializes on the real owner guard,
-installs the immutable admission block, and promotes only observed legacy
-bindings to checked lifecycle. An unchecked unbound failed record remains
-unchanged and quarantines the owner. No PVC or native receipt is invented.
-
-`AdvanceVolumeAnchorMigration` appends one reserve/apply/ready receipt per CAS.
-Applying persists the original PVC binding plus its new resource anchor and
-native adoption receipt atomically. Completion requires every entry READY and
-the exact current volume rows, then permanently pins prepared anchored admission.
-`GetVolumeAnchorMigration` independently reads committed progress. The operator
-must resume the same immutable plan after an uncertain response.
-
-SQL guards reject old lifecycle/admission writes and owner identity escapes
-while migration is pending. Metering-only updates remain permitted. Migration
-documents cannot be cleared, deleted, rewritten, advanced across missing stages
-or changed after completion. Existing allocation and retirement evidence remains
-distinct; adoption never impersonates an allocation reservation.
+The transaction, complete owner inventory, append-only CAS evidence and quarantine
+contract live beside `BeginVolumeAnchorMigration` and
+`AdvanceVolumeAnchorMigration` in
+[volume_anchor_migration.go](internal/server/volume_anchor_migration.go).
+Their comments explain the original
+[migration 0027](migrations/0027_volume_anchor_migration.sql).
+Adoption remains distinct from first-allocation and retirement evidence.
 
 Run `go test -race ./...` with the opt-in PostgreSQL environment documented in
 `internal/server/volume_lifecycle_live_test.go`. The migration cases restart the

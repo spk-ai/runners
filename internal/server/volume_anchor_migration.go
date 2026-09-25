@@ -62,6 +62,15 @@ func (s *Server) GetVolumeAnchorMigration(ctx context.Context, req *runnersv1.Ge
 	return &runnersv1.GetVolumeAnchorMigrationResponse{Migration: migration}, nil
 }
 
+// BeginVolumeAnchorMigration commits the complete drained owner plan and admission
+// block together with observed legacy-to-checked bindings. The same plan reads
+// committed progress; an unbound failed legacy generation stays quarantined.
+// SQL serialization and old-writer guards live in the immutable
+// ../../migrations/0027_volume_anchor_migration.sql, building on
+// ../../migrations/0019_volume_workload_admission.sql. The guard performs a real
+// owner-row write before cross-table reads; stale transactions must not admit work.
+// @see api::proto/agynio/api/runners/v1/runners
+// @see orchestrator::internal/volumemigration/coordinator
 func (s *Server) BeginVolumeAnchorMigration(ctx context.Context, req *runnersv1.BeginVolumeAnchorMigrationRequest) (*runnersv1.BeginVolumeAnchorMigrationResponse, error) {
 	kind, owner, err := migrationOwner(req.GetOwnerKind(), req.GetOwnerId())
 	if err != nil {
@@ -281,6 +290,12 @@ func advanceMigration(m *runnersv1.VolumeAnchorMigration, req *runnersv1.Advance
 	return next, nil
 }
 
+// AdvanceVolumeAnchorMigration appends one reserve/apply/ready receipt per CAS.
+// Apply commits the original PVC binding, anchor and journal together, never an
+// allocation reservation. Completion checks every READY entry against volume rows
+// and permanently pins prepared anchored admission. Migration 0027 guards immutable
+// progress from old writers while allowing metering-only updates. Lost replies
+// require GetVolumeAnchorMigration, not a new operation ID or force-unblock.
 func (s *Server) AdvanceVolumeAnchorMigration(ctx context.Context, req *runnersv1.AdvanceVolumeAnchorMigrationRequest) (*runnersv1.AdvanceVolumeAnchorMigrationResponse, error) {
 	kind, owner, err := migrationOwner(req.GetOwnerKind(), req.GetOwnerId())
 	if err != nil {

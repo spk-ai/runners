@@ -11,25 +11,15 @@ dependent API branch of the same name, revision `6fe4cab`, based on native API
 Nothing is installed or ready for coordinated rollout. Controllers are not
 migrated by this contribution, and no upstream PR has been submitted.
 
-The existing preparation revision cannot fence an older writer that already
-knows that field. Anchored reservations therefore have an additional, durable
-resource revision. New preparation transitions compare and advance both;
-metadata-only anchor binding advances the resource revision while leaving
-the preparation phase/revision unchanged. Database guards enforce this even
-when the writer does not know the added columns. Existing records stay unchanged.
+## Contract Owners
 
-## Required Ordering
-
-1. Create a distinct anchored workload reservation. Pin the owner to anchored
-   operation so future old-client starts cannot bypass the contract.
-2. Reserve native metadata only. Bind each volume anchor in its checked record
-   under the exact, still-unused workload reservation. Persist that reservation's
-   workload ID and both revisions in an immutable `VolumeAnchorReservation`.
-3. Bind the complete workload/volume anchor set immutably to the reservation.
-4. Advance both revisions before native anchored preparation. Bind exact PVCs
-   and Pod afterward, preserving the previously recorded owner UIDs.
-5. Continue checked activation/removal without changing the immutable anchors.
-   Lost replies require reading committed state, never replaying preparation.
+Dual revisions and complete owner binding live beside
+`BindWorkloadResourceAnchors` in
+[resource_anchors.go](internal/server/resource_anchors.go). Exact reservation
+rechecks live beside `checkVolumeAnchorReservation` and the checked update in
+[volume_lifecycle.go](internal/server/volume_lifecycle.go).
+These comments explain the original
+[anchor migration](migrations/0023_resource_anchors.sql) without changing its bytes.
 
 Native owner identities remain trusted backend/controller assertions, not
 authentication. This work must not pretend that anchor absence alone proves

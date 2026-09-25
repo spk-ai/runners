@@ -2,21 +2,18 @@
 
 The Runners service manages runner registrations and workload runtime state.
 
+See [AGENTS.md](AGENTS.md) for source owners and contribution rules, and
+[docs/catalog.json](docs/catalog.json) for operational and historical documents.
+
 The dependent [preparation-revocation registry](PREPARATION-REVOCATION.md)
 persists interrupted-provisioning recovery without replacing workspace identity.
 
 ## Explicit Workload Removal Confirmation
 
-`removed_at` retains its existing metering semantics: a failed/stopped status
-ends billing even when the workload has not been removed. The additive
-`removal_confirmed_at` field is written only by an explicit internal lifecycle
-update after runner inspection. Failure reports and logical deletion do not
-infer it. Migration `0017` deliberately leaves historical records unverified.
-
-Confirmation requires a terminal workload, preserves the first timestamp on
-retries, and does not overwrite billing end. A database constraint prevents a
-concurrent or older writer from reopening a confirmed workload. This is a
-record of a trusted controller's observation, not infrastructure fencing.
+Billing versus physical-removal semantics live beside `updateWorkload` in
+[workloads.go](internal/server/workloads.go), with the original
+[confirmation migration](migrations/0017_workload_removal_confirmation.sql).
+Confirmation is a trusted observation, not infrastructure fencing.
 
 The [API contribution branch](https://github.com/spk-ai/api/tree/feat/workload-removal-confirmation)
 supplies the additive protobuf fields. Until that contract is published, generate from the sibling
@@ -83,20 +80,10 @@ See [E2E Testing](https://github.com/agynio/architecture/blob/main/architecture/
 
 ### Closed volume reuse
 
-`CreateVolume` can reopen a failed or deleted record only for the same runtime
-owner kind/ID, organization, runner, volume definition, thread and agent class.
-Nullable sandbox thread/class fields must also match. The check is part of the
-database update, not a separate read that could race with another create.
-An identity mismatch or an already-open record returns `AlreadyExists` without
-changing the stored row. Callers must validate existing records before reuse;
-`AlreadyExists` alone is not proof that a volume belongs to the caller.
-
-A successful reopen retains identity and creation time, clears the previous
-backing instance and removal timestamp, and restarts metering. Existing size
-and requested-status behavior is unchanged. This does not authorize RPC callers,
-validate a runner's actual PVC, fence old workloads, or make SQL administrator
-writes immutable. That legacy ownership check itself needs no new API or database
-migration. Checked records are excluded from implicit create/reopen.
+Legacy same-owner reopening is documented beside `reopenClosedVolume` in
+[volumes.go](internal/server/volumes.go). Checked lifecycle and explicit audited
+binding belong to [volume_lifecycle.go](internal/server/volume_lifecycle.go).
+An AlreadyExists response is not proof of ownership or native PVC validation.
 
 CI runs `TestLiveVolumeReopen` against disposable PostgreSQL. To run it locally,
 set `AGYN_RUNNERS_VOLUME_TEST_DSN` to a PostgreSQL URL for a disposable database
@@ -114,23 +101,12 @@ the deployed platform database.
 
 ### Checked volume lifecycle
 
-This branch additionally requires the proposed checked-volume API and migration
-`0018_checked_volume_lifecycle.sql`. It adds a positive lifecycle revision, a
-sticky checked flag, the bound backend incarnation and a durable removal intent.
-
-Use `CreateVolumeChecked` for new provisioning, then revision-checked bind,
-begin-removal, confirm-removal, fail-provisioning or explicit reopen operations.
-Binding validates logical owner/class/key and cannot replace a live generation's
-UID. Begin commits the immutable target before any backend deletion. Confirmation
-requires that intent's ID; its authorized caller must first obtain matching
-runner `ABSENT` evidence. This server does not independently contact the runner.
-
-Database triggers reject legacy lifecycle mutations of checked rows, attempted
-unprotection/retargeting, discarded pending intents and direct checked-record
-deletion. Legacy lifecycle changes advance revisions; metering alone does not.
-Checked SQL uses an atomic revision predicate and does not overwrite concurrent
-metering updates. Reopen validates all persistent identity fields; deleted
-generations require confirmation, while failed provisioning is not absence proof.
+The checked lifecycle contract lives beside `CreateVolumeChecked`,
+`UpdateVolumeChecked` and `applyVolumeOperation` in
+[volume_lifecycle.go](internal/server/volume_lifecycle.go). Its comments link the
+original [lifecycle migration](migrations/0018_checked_volume_lifecycle.sql) and
+later admission, adoption and backend guards. Apply reviewed additive migrations;
+never edit an applied migration to explain or change the contract.
 
 The existing disposable PostgreSQL test now includes agent/sandbox checked
 lifecycles, independent-reader persistence, new-server-object intent recovery,
@@ -150,33 +126,11 @@ both the workload confirmation migration `0017` and checked-volume migration
 `0018`; this branch is based on their combined integration `0492121`, not the
 independent checked-volume contribution alone.
 
-For each checked runtime owner, database triggers enforce the following:
-
-- At most one unconfirmed workload may be admitted. A stopped/failed workload
-  with only a billing timestamp still holds that admission until explicit
-  physical-removal confirmation. Different owners have independent guards.
-- Admission requires all of that owner's checked volumes to be provisioning or
-  active, with matching organization, runner, thread and agent class. Closed
-  checked volumes must be explicitly reopened; pending deletion cannot be
-  bypassed by a new workload ID or different organization.
-- Begin-removal and failed-generation reopen require no unconfirmed workloads.
-  Stale failure compensation cannot fail provisioning while an owner is starting
-  or running. Failure/stop transitions and subsequent removal confirmation remain
-  available for cleanup.
-- Protected workload identity and an existing confirmation cannot be rewritten.
-  Unconfirmed workload records cannot be deleted to make an owner appear idle.
-  Old SQL writers are subject to the same triggers.
-
-The guard key is `(owner_kind, owner_id)`, not an organization or agent-class
-global lock. Both sides write the same small guard row before reading the other
-table, and do not lock each other's workload/volume rows. The separate reads in
-the volatile triggers use PostgreSQL's
-[fresh function-query snapshots](https://www.postgresql.org/docs/16/xfunc-volatility.html).
-The actual guard-row write also makes a stale repeatable-read/serializable
-transaction fail instead of accepting an old view; see
-[transaction isolation](https://www.postgresql.org/docs/16/transaction-iso.html).
-Guard revisions are internal synchronization, not an execution token or a
-replacement for the volume lifecycle revision. Metering-only updates skip them.
+The owner guard and checked lifecycle invariants are documented at the Go
+callers in [volume_lifecycle.go](internal/server/volume_lifecycle.go) and
+[workloads.go](internal/server/workloads.go), with the original
+[admission migration](migrations/0019_volume_workload_admission.sql).
+The guard key is the runtime owner, not a global organization/class lock.
 
 Migration locks both tables while installing the guards. It rejects existing
 checked owners with contradictory deletion/workload state, identity mismatches
@@ -211,29 +165,12 @@ The dependent `feat/legacy-volume-adoption` branch adds migration
 `UpdateVolumeChecked(bind)` RPC; it does not add an adoption endpoint or
 automatically import existing records.
 
-An audited legacy record must be active/provisioning, already have the same
-recorded physical name, and have no unconfirmed workload for its durable owner.
-The migration shares the workload admission guard's real database write, so a
-concurrent workload or stale transaction snapshot cannot slip through a prior
-idle scan. All workload states retain the reservation until explicit removal
-confirmation; a billing timestamp is insufficient. The database trigger also
-rejects adoption that changes size or resets metering history.
-
-Ordinary checked reopen now rejects all unchecked records. Failed, deleted and
-unbound legacy generations must remain retained for explicit reconciliation;
-neither this RPC nor the migration establishes that an old create cannot still
-finish. Checked failed-provisioning recovery remains available through its
-existing guarded reopen path. Adoption commits before a subsequent compatible
-workload is allowed; it is not a lasting deployment drain.
-
-Bindings for the current Kubernetes profile validate names and label values
-with the same `k8s.io/apimachinery` validation library version as the native
-runner, following the Kubernetes [object-name rules](https://kubernetes.io/docs/concepts/overview/working-with-objects/names/).
-The eight allowed persistent label keys, required backend/controller managers,
-optional manager value, bounded opaque UID and positive stored size are checked
-before binding becomes immutable. Transient workload/thread labels are rejected,
-not silently removed. Other backend profiles require an explicit identity
-contract; this does not claim a new backend-neutral validation API.
+Audited legacy bind, immutable backend/owner validation and explicit checked
+reopen are owned by [volume_lifecycle.go](internal/server/volume_lifecycle.go)
+and the original [adoption migration](migrations/0020_legacy_volume_adoption.sql).
+This operation is not a lasting deployment drain or proof against late creates.
+The current identity profile uses the native runner's Kubernetes validators;
+other backends require an explicit identity contract.
 
 `TestLiveVolumeReopen/legacy-adoption` covers both owner kinds, all five
 unconfirmed workload states, known-name provenance, unchanged rejected writes,
@@ -253,12 +190,10 @@ and a coordinated all-writer rollout remain mandatory before real adoption.
 
 ## Backend-Bound Volumes
 
-The dependent backend-identity proposal requires every physical binding to carry
-the native backend's immutable `backend_id`. Begin/removal/reopen cannot use an
-unidentified old binding. Confirmation must name the stored backend as well as
-the removal intent; it remains a trusted controller assertion, not a signed
-native receipt. The JSON binding/intent preserves the identity across processes
-and is protected by the existing immutability and revision checks.
+Backend identity and matching confirmation requirements live beside
+`validateVolumeBinding` and `applyVolumeOperation` in
+[volume_lifecycle.go](internal/server/volume_lifecycle.go). The registry trusts
+authenticated controller observations; it does not contact the native runner.
 
 Migration `0021_volume_backend_identity.sql` also rejects new backend-less
 bindings through old SQL writers. It validates existing history and fails

@@ -46,6 +46,8 @@ func validateCheckedVolumeCreate(req *runnersv1.CreateVolumeRequest) error {
 	return nil
 }
 
+// CreateVolumeChecked reserves an unbound PROVISIONING generation with a positive
+// revision and sticky checked protection. It never implicitly reopens a record.
 func (s *Server) CreateVolumeChecked(ctx context.Context, req *runnersv1.CreateVolumeCheckedRequest) (*runnersv1.CreateVolumeCheckedResponse, error) {
 	if err := validateCheckedVolumeCreate(req.GetVolume()); err != nil {
 		return nil, err
@@ -57,6 +59,18 @@ func (s *Server) CreateVolumeChecked(ctx context.Context, req *runnersv1.CreateV
 	return &runnersv1.CreateVolumeCheckedResponse{Volume: resp.Volume}, nil
 }
 
+// UpdateVolumeChecked persists one lifecycle transition by CAS, separate from
+// metering. Bind pins backend/name/UID/owner; begin-removal must commit that target
+// before native deletion. Confirmation trusts the caller's matching ABSENT evidence.
+// Failed provisioning is not absence; only confirmed unanchored deletion clears
+// identity on explicit reopen. Anchored retirement retains its history permanently.
+// ../../migrations/0018_checked_volume_lifecycle.sql protects checked history;
+// ../../migrations/0019_volume_workload_admission.sql serializes owner admission
+// against removal even after billing ends. Audited legacy bind needs a recorded
+// name and idle owner under ../../migrations/0020_legacy_volume_adoption.sql.
+// ../../migrations/0021_volume_backend_identity.sql rejects backend-less history
+// without backfill. These SQL guards also constrain old binaries, not only this CAS.
+// @see orchestrator::internal/reconciler/checked_volumes
 func (s *Server) UpdateVolumeChecked(ctx context.Context, req *runnersv1.UpdateVolumeCheckedRequest) (*runnersv1.UpdateVolumeCheckedResponse, error) {
 	id, err := parseUUID(req.GetId())
 	if err != nil {

@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "documents": [
+    {
+      "id": "readme",
+      "path": "README.md",
+      "title": "Runners",
+      "purpose": "Repository entry point, development setup and integration context.",
+      "kind": "navigation"
+    },
+    {
+      "id": "agents",
+      "path": "AGENTS.md",
+      "title": "Runners Contribution Guide",
+      "purpose": "Source ownership, living documentation and verification rules.",
+      "kind": "contribution"
+    },
+    {
+      "id": "resource-anchors",
+      "path": "RESOURCE-ANCHORS.md",
+      "title": "Resource Anchor Registry",
+      "purpose": "Anchor rollout dependencies, identity investigation and dated SQL acceptance.",
+      "kind": "verification"
+    },
+    {
+      "id": "prepared-workloads",
+      "path": "PREPARED-WORKLOADS.md",
+      "title": "Prepared Workload Registry",
+      "purpose": "Registry rollout boundaries and disposable-database reproduction evidence.",
+      "kind": "verification"
+    },
+    {
+      "id": "preparation-revocation",
+      "path": "PREPARATION-REVOCATION.md",
+      "title": "Preparation Revocation Registry",
+      "purpose": "Revocation dependencies, trust limits and historical database checks.",
+      "kind": "verification"
+    },
+    {
+      "id": "anchored-retirement",
+      "path": "ANCHORED-VOLUME-RETIREMENT.md",
+      "title": "Anchored Volume Retirement Registry",
+      "purpose": "Retirement dependencies and database acceptance scope.",
+      "kind": "verification"
+    },
+    {
+      "id": "volume-migration",
+      "path": "VOLUME-ANCHOR-MIGRATION.md",
+      "title": "Existing Workspace Adoption Registry",
+      "purpose": "Drained-owner migration, backup and quarantine operations.",
+      "kind": "operations"
+    }
+  ]
+}

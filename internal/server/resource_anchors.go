@@ -19,6 +19,10 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// validateRegistryResourceAnchor checks shape, not caller authority. The workload
+// anchor pins the actual inbox thread; legacy registry thread_id remains an instance
+// alias, not workspace identity. ../../migrations/0024_resource_anchor_thread_identity.sql
+// is the additive SQL correction; historical rows and migration 0023 stay unchanged.
 func validateRegistryResourceAnchor(a *runnerv1.ResourceAnchor, kind runnerv1.ResourceAnchorKind, id uuid.UUID, backend, ownerKind string, owner, agent, thread uuid.UUID) error {
 	if a == nil || a.Kind != kind || a.ResourceId != id.String() || !canonicalPreparedUUID(a.ResourceId) ||
 		!canonicalPreparedUUID(a.InstanceUid) || !validVolumeBackend(a.BackendId) || a.BackendId != backend || len(a.ProtoReflect().GetUnknown()) != 0 {
@@ -108,6 +112,13 @@ func (s *Server) UpdateAnchoredWorkload(ctx context.Context, req *runnersv1.Upda
 	return &runnersv1.UpdateAnchoredWorkloadResponse{Workload: response.Workload}, nil
 }
 
+// BindWorkloadResourceAnchors records the complete owner set before preparation;
+// each volume anchor must already be durable. Metadata binding advances only the
+// resource revision; later anchored lifecycle writes advance both revisions to
+// exclude older prepared writers. ../../migrations/0023_resource_anchors.sql owns
+// database enforcement and durable owner pins.
+// @see orchestrator::internal/reconciler/resource_anchors
+// @see k8s-runner::internal/server/resource_anchors
 func (s *Server) BindWorkloadResourceAnchors(ctx context.Context, req *runnersv1.BindWorkloadResourceAnchorsRequest) (*runnersv1.BindWorkloadResourceAnchorsResponse, error) {
 	if !canonicalPreparedUUID(req.GetId()) || req.GetExpectedPreparationRevision() == 0 || req.GetExpectedPreparationRevision() >= math.MaxInt64 || req.GetExpectedAnchorRevision() == 0 || req.GetExpectedAnchorRevision() >= math.MaxInt64 {
 		return nil, status.Error(codes.InvalidArgument, "workload_anchor_id_and_revisions_required")
@@ -168,6 +179,10 @@ func (s *Server) BindWorkloadResourceAnchors(ctx context.Context, req *runnersv1
 	return &runnersv1.BindWorkloadResourceAnchorsResponse{Workload: w}, nil
 }
 
+// checkVolumeAnchorReservation is preflight, not the concurrency boundary.
+// Migration 0023 rechecks the persisted workload ID and both reservation revisions
+// after its owner-guard write: a canceled reservation cannot borrow a successor's
+// authority even if the initial UPDATE snapshot saw an unused reservation.
 func (s *Server) checkVolumeAnchorReservation(ctx context.Context, v volumeRecord, op *runnersv1.BindVolumeResourceAnchor) error {
 	if !canonicalPreparedUUID(op.GetWorkloadId()) || op.GetExpectedPreparationRevision() == 0 || op.GetExpectedPreparationRevision() >= math.MaxInt64 || op.GetExpectedAnchorRevision() == 0 || op.GetExpectedAnchorRevision() >= math.MaxInt64 {
 		return status.Error(codes.InvalidArgument, "volume_anchor_reservation_required")
