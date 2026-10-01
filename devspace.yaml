@@ -56,16 +56,7 @@ functions:
                   done
                   echo "Files synced, starting buf generate..."
                   ls -la /opt/app/data/
-                  buf generate buf.build/agynio/api \
-                    --include-imports \
-                                    --path agynio/api/runner/v1 \
-                                    --path agynio/api/identity/v1 \
-                    --path agynio/api/authorization/v1 \
-                    --path agynio/api/ziti_management/v1 \
-                    --path agynio/api/notifications/v1 \
-                    --path agynio/api/agents/v1 \
-                    --path agynio/api/runner/v1 \
-                    --path agynio/api/runners/v1
+                  buf generate --include-imports
                   echo "buf generate complete, verifying runners package..."
                   go list ./cmd/runners
                   echo "buf generate complete, starting go run..."

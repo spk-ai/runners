@@ -338,6 +338,11 @@ func (s *Server) DeleteRunner(ctx context.Context, req *runnersv1.DeleteRunnerRe
 		return nil, err
 	}
 
+	// Database retention/admission guards must succeed before external identity
+	// or authorization cleanup. A rejected deletion must leave the runner usable.
+	if err := s.deleteRunner(ctx, id); err != nil {
+		return nil, toStatusError(err)
+	}
 	if runner.ZitiServiceID != "" || runner.ZitiIdentityID != "" {
 		if _, err := s.zitiManagementClient.DeleteRunnerIdentity(ctx, &zitimanagementv1.DeleteRunnerIdentityRequest{
 			IdentityId:    runner.IdentityID.String(),
@@ -349,9 +354,6 @@ func (s *Server) DeleteRunner(ctx context.Context, req *runnersv1.DeleteRunnerRe
 
 	s.cleanupRunnerAuthorization(ctx, runner.IdentityID, runner.OrganizationID)
 
-	if err := s.deleteRunner(ctx, id); err != nil {
-		return nil, toStatusError(err)
-	}
 	return &runnersv1.DeleteRunnerResponse{}, nil
 }
 
