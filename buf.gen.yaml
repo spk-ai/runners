@@ -16,3 +16,8 @@ plugins:
     opt:
       - paths=source_relative
       - require_unimplemented_servers=false
+
+inputs:
+  - git_repo: https://github.com/spk-ai/api.git
+    ref: ce64da8680c39a13f7174c3146b38f3bfcc03037
+    subdir: proto
