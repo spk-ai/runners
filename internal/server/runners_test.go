@@ -1031,3 +1031,67 @@ func TestDeleteRunnerBestEffortZitiFailure(t *testing.T) {
 		t.Fatalf("unmet expectations: %v", err)
 	}
 }
+
+func TestDeleteRunnerRetentionFailurePreservesExternalIdentity(t *testing.T) {
+	mockPool, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("failed to create mock pool: %v", err)
+	}
+
+	query := fmt.Sprintf(`SELECT %s FROM runners WHERE id = $1`, runnerColumns)
+	deleteQuery := regexp.QuoteMeta(`DELETE FROM runners WHERE id = $1`)
+
+	runnerID := uuid.New()
+	organizationID := uuid.New()
+	callerID := uuid.New()
+	identityID := uuid.New()
+	now := time.Now().UTC()
+	labelsJSON := []byte("{}")
+	capabilitiesJSON := []byte("[]")
+	zitiServiceID := "service-id"
+	zitiServiceName := "runner-service"
+	zitiIdentityID := "ziti-identity"
+	rows := pgxmock.NewRows([]string{"id", "name", "organization_id", "identity_id", "ziti_identity_id", "ziti_service_id", "ziti_service_name", "status", "labels", "capabilities", "created_at", "updated_at"}).
+		AddRow(runnerID, "runner-1", pgtype.UUID{Bytes: organizationID, Valid: true}, identityID, zitiIdentityID, zitiServiceID, zitiServiceName, runnerStatusOffline, labelsJSON, capabilitiesJSON, now, now)
+
+	mockPool.ExpectQuery(regexp.QuoteMeta(query)).WithArgs(runnerID).WillReturnRows(rows)
+	mockPool.ExpectExec(deleteQuery).WithArgs(runnerID).WillReturnError(errors.New("retained admission history"))
+
+	var gotDeleteReq *zitimanagementv1.DeleteRunnerIdentityRequest
+	zitiClient := fakeZitiManagementClient{
+		deleteRunnerIdentity: func(ctx context.Context, req *zitimanagementv1.DeleteRunnerIdentityRequest) (*zitimanagementv1.DeleteRunnerIdentityResponse, error) {
+			gotDeleteReq = req
+			return &zitimanagementv1.DeleteRunnerIdentityResponse{}, nil
+		},
+	}
+
+	var gotCheckReq *authorizationv1.CheckRequest
+	authorizationClient := fakeAuthorizationClient{
+		check: func(ctx context.Context, req *authorizationv1.CheckRequest) (*authorizationv1.CheckResponse, error) {
+			gotCheckReq = req
+			return &authorizationv1.CheckResponse{Allowed: true}, nil
+		},
+		write: func(ctx context.Context, req *authorizationv1.WriteRequest) (*authorizationv1.WriteResponse, error) {
+			t.Fatal("rejected database deletion changed authorization")
+			return nil, nil
+		},
+	}
+
+	srv := New(Options{
+		Pool:                 mockPool,
+		AuthorizationClient:  authorizationClient,
+		ZitiManagementClient: zitiClient,
+	})
+
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(identityMetadata, callerID.String()))
+	_, err = srv.DeleteRunner(ctx, &runnersv1.DeleteRunnerRequest{Id: runnerID.String()})
+	if err == nil || gotDeleteReq != nil {
+		t.Fatal("rejected database deletion changed external identity")
+	}
+	if gotCheckReq == nil {
+		t.Fatal("missing authorization check")
+	}
+	if err := mockPool.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}

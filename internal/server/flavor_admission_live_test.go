@@ -2,12 +2,14 @@ package server
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	runnersv1 "github.com/agynio/runners/.gen/go/agynio/api/runners/v1"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -134,4 +136,77 @@ func testFlavorAdmission(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 		t.Fatalf("capacity not reusable after confirmed abort: %v", err)
 	}
 	occupied(1)
+	// Seed a guard before the fixed snapshot: a newly created guard alone would
+	// hide the stale-policy race behind INSERT ON CONFLICT serialization.
+	unlimited := request()
+	unlimited.Preparation.Workload.Flavor = "new-policy-" + uuid.NewString()
+	primed, err := client.CreateAnchoredWorkload(ctx, unlimited)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primeAbort := preparedOperation("abort", nil)
+	primeAbort.Id = primed.Workload.Meta.Id
+	primeAbort.ExpectedRevision = primed.Workload.Preparation.Revision
+	if _, err := client.UpdateAnchoredWorkload(ctx, &runnersv1.UpdateAnchoredWorkloadRequest{Operation: primeAbort, ExpectedAnchorRevision: primed.Workload.Preparation.Resources.Revision}); err != nil {
+		t.Fatal(err)
+	}
+	// Fixed-snapshot configuration must not miss a concurrent committed workload.
+	policyTx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer policyTx.Rollback(context.Background())
+	var before int
+	if err := policyTx.QueryRow(ctx, "SELECT count(*) FROM workloads").Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	unlimited.Preparation.Workload.Id = uuid.NewString()
+	if _, err := client.CreateAnchoredWorkload(ctx, unlimited); err != nil {
+		t.Fatal(err)
+	}
+	_, err = policyTx.Exec(ctx, "INSERT INTO workload_flavor_admission (runner_id,flavor,capacity) VALUES ($1,$2,0)", runnerID, unlimited.Preparation.Workload.Flavor)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "55000" || pgErr.ConstraintName != "workload_flavor_admission" {
+		t.Fatalf("stale policy snapshot accepted: %v", err)
+	}
+	if err := policyTx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Workload insertion cannot evade a policy through a stale snapshot either.
+	rr, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rr.Rollback(context.Background())
+	if err := rr.QueryRow(ctx, "SELECT count(*) FROM workloads").Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	newFlavor := "after-snapshot-" + uuid.NewString()
+	if _, err := pool.Exec(ctx, "INSERT INTO workload_flavor_admission (runner_id,flavor,capacity) VALUES ($1,$2,0)", runnerID, newFlavor); err != nil {
+		t.Fatal(err)
+	}
+	_, err = rr.Exec(ctx, `INSERT INTO workloads (id,runner_id,thread_id,agent_id,organization_id,status,owner_kind,owner_id,flavor)
+	 SELECT gen_random_uuid(),runner_id,thread_id,agent_id,organization_id,'starting',owner_kind,owner_id,$2 FROM workloads WHERE id=$1`, winner.Meta.Id, newFlavor)
+	if !errors.As(err, &pgErr) || pgErr.Code != "40001" {
+		t.Fatalf("fixed-snapshot insert accepted: %v", err)
+	}
+	if err := rr.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// An idle policy must not obstruct the runner's existing deletion lifecycle.
+	idle := uuid.NewString()
+	if _, err := pool.Exec(ctx, "INSERT INTO runners (id,name,identity_id,service_token_hash) VALUES ($1,'idle-admission-fixture',gen_random_uuid(),$2)", idle, "fixture-"+idle); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, "INSERT INTO workload_flavor_admission (runner_id,flavor,capacity) VALUES ($1,'idle',0)", idle); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, "DELETE FROM runners WHERE id=$1", idle); err != nil {
+		t.Fatalf("idle policy blocked deletion: %v", err)
+	}
+	var policies int
+	if err := reader.QueryRow(ctx, "SELECT count(*) FROM workload_flavor_admission WHERE runner_id=$1", idle).Scan(&policies); err != nil || policies != 0 {
+		t.Fatalf("idle policy remained: %v", err)
+	}
+
 }
