@@ -2,3 +2,6 @@
 .env
 .DS_Store
 .gen/
+
+# Reviewed API checkout used by CI; generated bindings remain untracked.
+.ci-api/
