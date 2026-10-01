@@ -184,6 +184,9 @@ func applyVolumeOperation(volume *volumeRecord, req *runnersv1.UpdateVolumeCheck
 		volume.ResourceAnchor = proto.Clone(a).(*runnerv1.ResourceAnchor)
 		volume.AnchorReservation = &runnersv1.VolumeAnchorReservation{WorkloadId: op.BindAnchor.GetWorkloadId(),
 			PreparationRevision: op.BindAnchor.GetExpectedPreparationRevision(), ResourceRevision: op.BindAnchor.GetExpectedAnchorRevision()}
+		if volume.LifecycleRevision != 1 {
+			volume.AnchorReservation.AllocationRevision = uint64(volume.LifecycleRevision + 1)
+		}
 	case *runnersv1.UpdateVolumeCheckedRequest_Bind:
 		if volume.Status != volumeStatusProvisioning && volume.Status != volumeStatusActive || volume.RemovalIntent != nil {
 			return fail("volume_not_bindable")

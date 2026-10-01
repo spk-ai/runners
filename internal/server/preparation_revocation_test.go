@@ -142,6 +142,17 @@ func TestRegistryRevocationVolumeIdentity(t *testing.T) {
 	if err := validateRevocationVolumeRecord(w, a, nil, v); err != nil {
 		t.Fatalf("original absent first allocation: %v", err)
 	}
+	reopened := v
+	reopened.LifecycleRevision = 4
+	reopened.AnchorReservation = proto.Clone(v.AnchorReservation).(*runnersv1.VolumeAnchorReservation)
+	reopened.AnchorReservation.AllocationRevision = 4
+	if err := validateRevocationVolumeRecord(w, a, nil, reopened); err != nil {
+		t.Fatalf("reopened original allocation: %v", err)
+	}
+	reopened.LifecycleRevision++
+	if err := validateRevocationVolumeRecord(w, a, nil, reopened); err == nil {
+		t.Fatal("later revision accepted as original allocation")
+	}
 	for _, change := range []string{"revision", "reservation", "owner", "removal"} {
 		changed := v
 		switch change {

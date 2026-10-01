@@ -44,6 +44,19 @@ func testResourceAnchors(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 					if err != nil {
 						t.Fatal(err)
 					}
+					if i == 0 && volumes == 3 {
+						failed, err := client.UpdateVolumeChecked(ctx, &runnersv1.UpdateVolumeCheckedRequest{Id: v.Volume.Meta.Id, ExpectedRevision: v.Volume.LifecycleRevision,
+							Operation: &runnersv1.UpdateVolumeCheckedRequest_FailProvisioning{FailProvisioning: &runnersv1.FailVolumeProvisioning{}}})
+						if err != nil {
+							t.Fatal(err)
+						}
+						reopened, err := client.UpdateVolumeChecked(ctx, &runnersv1.UpdateVolumeCheckedRequest{Id: v.Volume.Meta.Id, ExpectedRevision: failed.Volume.LifecycleRevision,
+							Operation: &runnersv1.UpdateVolumeCheckedRequest_Reopen{Reopen: &runnersv1.ReopenVolume{Volume: r}}})
+						if err != nil || reopened.GetVolume().GetLifecycleRevision() != 3 {
+							t.Fatalf("unused checked reopen: %v", err)
+						}
+						v.Volume = reopened.Volume
+					}
 					claims = append(claims, v.Volume)
 				}
 				req := &runnersv1.CreatePreparedWorkloadRequest{BackendId: lifecycleTestBackend,
@@ -128,6 +141,9 @@ func testResourceAnchors(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 							Operation: &runnersv1.UpdateVolumeCheckedRequest_BindAnchor{BindAnchor: &runnersv1.BindVolumeResourceAnchor{Anchor: volumeAnchors[i], WorkloadId: w.Meta.Id, ExpectedPreparationRevision: 1, ExpectedAnchorRevision: 1}}})
 						if err != nil {
 							t.Fatal(err)
+						}
+						if i == 0 && volumes == 3 && bound.Volume.AnchorReservation.GetAllocationRevision() != 4 {
+							t.Fatal("reopened allocation lost its original revision")
 						}
 						claims[i] = bound.Volume
 						if !proto.Equal(bound.Volume.ResourceAnchor, volumeAnchors[i]) || bound.Volume.BoundInstance != nil {

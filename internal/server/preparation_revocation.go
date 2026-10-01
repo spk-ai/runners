@@ -159,7 +159,7 @@ func validateRevocationVolumeRecord(w workloadRecord, anchor *runnerv1.ResourceA
 	}
 	// Absence cannot erase a known workspace, or reset an older allocation.
 	reservation := v.AnchorReservation
-	if v.Status != volumeStatusProvisioning || v.LifecycleRevision != 2 || v.BoundInstance != nil || v.InstanceID != nil ||
+	if v.Status != volumeStatusProvisioning || uint64(v.LifecycleRevision) != originalAllocationRevision(reservation) || v.BoundInstance != nil || v.InstanceID != nil ||
 		reservation == nil || !canonicalPreparedUUID(reservation.WorkloadId) || reservation.PreparationRevision != 1 || reservation.ResourceRevision != 1 ||
 		len(reservation.ProtoReflect().GetUnknown()) != 0 {
 		return status.Error(codes.FailedPrecondition, "absent_workspace_requires_original_unbound_reservation")
@@ -168,7 +168,7 @@ func validateRevocationVolumeRecord(w workloadRecord, anchor *runnerv1.ResourceA
 }
 
 // checkRevocationVolumeRecords requires found PVCs to be checked-bound first;
-// absent PVCs retain the original revision-2 unbound allocation receipt, even if
+// absent PVCs retain the original recorded unbound allocation receipt, even if
 // reserved by an earlier attempt. A known UID cannot become first provision.
 // Migration 0026 repeats this under the admission owner lock at UPDATE, so a
 // competing bind after these reads invalidates stale absence. Native evidence
@@ -188,4 +188,11 @@ func (s *Server) checkRevocationVolumeRecords(ctx context.Context, w workloadRec
 		}
 	}
 	return nil
+}
+
+func originalAllocationRevision(receipt *runnersv1.VolumeAnchorReservation) uint64 {
+	if receipt.GetAllocationRevision() == 0 {
+		return 2
+	}
+	return receipt.GetAllocationRevision()
 }

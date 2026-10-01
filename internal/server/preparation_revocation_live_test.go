@@ -57,6 +57,19 @@ func testPreparationRevocationRegistry(t *testing.T, ctx context.Context, pool *
 					if err != nil {
 						t.Fatal(err)
 					}
+					if i == 0 && mode == "absent" {
+						failed, err := client.UpdateVolumeChecked(ctx, &runnersv1.UpdateVolumeCheckedRequest{Id: response.Volume.Meta.Id, ExpectedRevision: response.Volume.LifecycleRevision,
+							Operation: &runnersv1.UpdateVolumeCheckedRequest_FailProvisioning{FailProvisioning: &runnersv1.FailVolumeProvisioning{}}})
+						if err != nil {
+							t.Fatal(err)
+						}
+						reopened, err := client.UpdateVolumeChecked(ctx, &runnersv1.UpdateVolumeCheckedRequest{Id: response.Volume.Meta.Id, ExpectedRevision: failed.Volume.LifecycleRevision,
+							Operation: &runnersv1.UpdateVolumeCheckedRequest_Reopen{Reopen: &runnersv1.ReopenVolume{Volume: r}}})
+						if err != nil {
+							t.Fatal(err)
+						}
+						response.Volume = reopened.Volume
+					}
 					volumes = append(volumes, response.Volume)
 					create.VolumeIds = append(create.VolumeIds, response.Volume.Meta.Id)
 				}
