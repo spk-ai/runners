@@ -42,7 +42,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: spk-ai/api
-          ref: 1ce0c52503909b0a58e7e883cd527b6e5bb2a96a
+          ref: ce64da8680c39a13f7174c3146b38f3bfcc03037
           path: .ci-api
           persist-credentials: false
 

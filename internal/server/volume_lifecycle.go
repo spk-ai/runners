@@ -90,7 +90,7 @@ func (s *Server) UpdateVolumeChecked(ctx context.Context, req *runnersv1.UpdateV
 	if err := applyVolumeOperation(&next, req); err != nil {
 		return nil, err
 	}
-	if op := req.GetBindAnchor(); op != nil {
+	if op := volumeAnchorBinding(req); op != nil {
 		if err := s.checkVolumeAnchorReservation(ctx, current, op); err != nil {
 			return nil, err
 		}
@@ -114,7 +114,7 @@ func (s *Server) UpdateVolumeChecked(ctx context.Context, req *runnersv1.UpdateV
 	closed := next.Status == volumeStatusDeleted || next.Status == volumeStatusFailed
 	extraSet, extraWhere := "", ""
 	args := []any{id, int64(req.ExpectedRevision), next.Status, next.InstanceID, next.SizeGB, boundJSON, intentJSON, reopen, closed}
-	if op := req.GetBindAnchor(); op != nil {
+	if op := volumeAnchorBinding(req); op != nil {
 		data, err := protojson.Marshal(next.ResourceAnchor)
 		if err != nil {
 			return nil, status.Error(codes.Internal, "encode_volume_anchor")
@@ -173,17 +173,23 @@ func applyVolumeOperation(volume *volumeRecord, req *runnersv1.UpdateVolumeCheck
 		return beginAnchoredVolumeRemoval(volume)
 	case *runnersv1.UpdateVolumeCheckedRequest_ConfirmAnchoredRemoval:
 		return confirmAnchoredVolumeRemoval(volume, op.ConfirmAnchoredRemoval)
-	case *runnersv1.UpdateVolumeCheckedRequest_BindAnchor:
+	case *runnersv1.UpdateVolumeCheckedRequest_BindAnchor, *runnersv1.UpdateVolumeCheckedRequest_BindReopenedAnchor:
+		// A distinct operation fences mixed-version peers. An old caller cannot
+		// allocate a reopened generation through the revision-2-only contract.
+		if (req.GetBindReopenedAnchor() != nil) != (volume.LifecycleRevision > 1) {
+			return fail("volume_allocation_receipt_capability_required")
+		}
+		binding := volumeAnchorBinding(req)
 		if !volume.CheckedLifecycle || volume.Status != volumeStatusProvisioning || volume.BoundInstance != nil || volume.InstanceID != nil || volume.RemovalIntent != nil {
 			return fail("unbound_checked_volume_required")
 		}
-		a := op.BindAnchor.GetAnchor()
+		a := binding.GetAnchor()
 		if err := validateRegistryResourceAnchor(a, runnerv1.ResourceAnchorKind_RESOURCE_ANCHOR_KIND_VOLUME, volume.Meta.ID, a.GetBackendId(), volume.OwnerKind, volume.OwnerID, volume.AgentID, volume.ThreadID); err != nil {
 			return err
 		}
 		volume.ResourceAnchor = proto.Clone(a).(*runnerv1.ResourceAnchor)
-		volume.AnchorReservation = &runnersv1.VolumeAnchorReservation{WorkloadId: op.BindAnchor.GetWorkloadId(),
-			PreparationRevision: op.BindAnchor.GetExpectedPreparationRevision(), ResourceRevision: op.BindAnchor.GetExpectedAnchorRevision()}
+		volume.AnchorReservation = &runnersv1.VolumeAnchorReservation{WorkloadId: binding.GetWorkloadId(),
+			PreparationRevision: binding.GetExpectedPreparationRevision(), ResourceRevision: binding.GetExpectedAnchorRevision()}
 		if volume.LifecycleRevision != 1 {
 			volume.AnchorReservation.AllocationRevision = uint64(volume.LifecycleRevision + 1)
 		}
@@ -337,4 +343,13 @@ func validateVolumeBinding(record volumeRecord, instance *runnerv1.VolumeListIte
 		return status.Error(codes.FailedPrecondition, "volume_instance_owner_mismatch")
 	}
 	return nil
+}
+
+// volumeAnchorBinding keeps the common ownership/CAS checks identical while
+// the oneof operation preserves the fail-closed capability boundary.
+func volumeAnchorBinding(req *runnersv1.UpdateVolumeCheckedRequest) *runnersv1.BindVolumeResourceAnchor {
+	if binding := req.GetBindReopenedAnchor(); binding != nil {
+		return binding
+	}
+	return req.GetBindAnchor()
 }

@@ -107,8 +107,13 @@ func testPreparationRevocationRegistry(t *testing.T, ctx context.Context, pool *
 				var anchors []*runnerv1.ResourceAnchor
 				for i, v := range volumes {
 					a := registryTestAnchor(record, runnerv1.ResourceAnchorKind_RESOURCE_ANCHOR_KIND_VOLUME, uuid.MustParse(v.Meta.Id), human)
-					bound, err := client.UpdateVolumeChecked(ctx, &runnersv1.UpdateVolumeCheckedRequest{Id: v.Meta.Id, ExpectedRevision: v.LifecycleRevision,
-						Operation: &runnersv1.UpdateVolumeCheckedRequest_BindAnchor{BindAnchor: &runnersv1.BindVolumeResourceAnchor{Anchor: a, WorkloadId: w.Meta.Id, ExpectedPreparationRevision: 1, ExpectedAnchorRevision: 1}}})
+					binding := &runnersv1.BindVolumeResourceAnchor{Anchor: a, WorkloadId: w.Meta.Id, ExpectedPreparationRevision: 1, ExpectedAnchorRevision: 1}
+					request := &runnersv1.UpdateVolumeCheckedRequest{Id: v.Meta.Id, ExpectedRevision: v.LifecycleRevision,
+						Operation: &runnersv1.UpdateVolumeCheckedRequest_BindAnchor{BindAnchor: binding}}
+					if v.LifecycleRevision > 1 {
+						request.Operation = &runnersv1.UpdateVolumeCheckedRequest_BindReopenedAnchor{BindReopenedAnchor: binding}
+					}
+					bound, err := client.UpdateVolumeChecked(ctx, request)
 					if err != nil {
 						t.Fatal(err)
 					}
