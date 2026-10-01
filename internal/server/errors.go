@@ -62,6 +62,12 @@ func InvalidPageToken(err error) error {
 func toStatusError(err error) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
+		if pgErr.Code == "55000" && pgErr.ConstraintName == "workload_flavor_capacity" {
+			return status.Error(codes.ResourceExhausted, "workload_flavor_capacity_exhausted")
+		}
+		if pgErr.Code == "55000" && pgErr.ConstraintName == "workload_flavor_admission" {
+			return status.Error(codes.FailedPrecondition, "workload_flavor_admission_conflict")
+		}
 		if (pgErr.Code == "55000" || pgErr.Code == "23514") && pgErr.ConstraintName == "volume_anchor_migration" {
 			return status.Error(codes.FailedPrecondition, "volume_anchor_migration_conflict")
 		}

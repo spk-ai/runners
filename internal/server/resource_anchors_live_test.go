@@ -25,6 +25,17 @@ func testResourceAnchors(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 			t.Run(fmt.Sprintf("sandbox=%t/volumes=%d", sandbox, volumes), func(t *testing.T) {
 				client, stop := preparedRegistryClient(t, pool)
 				raw := newRequest(sandbox)
+				flavor := "admission-" + uuid.NewString()
+				if _, err := pool.Exec(ctx, "INSERT INTO workload_flavor_admission (runner_id, flavor, capacity) VALUES ($1,$2,1)", raw.RunnerId, flavor); err != nil {
+					t.Fatal(err)
+				}
+				assertSlot := func(want int) {
+					t.Helper()
+					var got int
+					if err := reader.QueryRow(ctx, "SELECT occupied FROM workload_flavor_admission WHERE runner_id=$1 AND flavor=$2", raw.RunnerId, flavor).Scan(&got); err != nil || got != want {
+						t.Fatalf("admission occupied=%d want=%d error=%v", got, want, err)
+					}
+				}
 				var claims []*runnersv1.Volume
 				for i := 0; i < volumes; i++ {
 					r := proto.Clone(raw).(*runnersv1.CreateVolumeRequest)
@@ -43,6 +54,7 @@ func testResourceAnchors(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 					req.VolumeIds = append(req.VolumeIds, v.Meta.Id)
 				}
 				human := uuid.NewString()
+				req.Workload.Flavor = flavor
 				for turn := 0; turn < 2; turn++ {
 					req.Workload.Id = uuid.NewString()
 					created, err := client.CreateAnchoredWorkload(ctx, &runnersv1.CreateAnchoredWorkloadRequest{Preparation: req})
@@ -50,6 +62,7 @@ func testResourceAnchors(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 						t.Fatal(err)
 					}
 					w := created.Workload
+					assertSlot(1)
 					if w.Preparation.Resources.GetRevision() != 1 || w.Preparation.Resources.Workload != nil || w.Preparation.Revision != 1 {
 						t.Fatal("reservation invented native authority")
 					}
@@ -66,6 +79,11 @@ func testResourceAnchors(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 							t.Fatalf("%s: %v", name, err)
 						}
 						w = r.Workload
+						if w.RemovalConfirmedAt == nil {
+							assertSlot(1)
+						} else {
+							assertSlot(0)
+						}
 						if w.Preparation.Revision != previous.Revision+1 || w.Preparation.Resources.Revision != previous.Resources.Revision+1 {
 							t.Fatal("transition did not advance both revisions")
 						}
