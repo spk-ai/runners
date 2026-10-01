@@ -63,16 +63,10 @@ jobs:
           service: runners
           include_smoke: "false"
 
-      - name: Restore ArgoCD sync
+      # Provisioning uses a disposable Helm-owned VM, with no ArgoCD apps.
+      - name: Stop disposable platform VM
         if: always()
         run: |
-          set +e
-          if [ -f /tmp/runners-devspace.pid ]; then
-            kill "$(cat /tmp/runners-devspace.pid)"
-            wait "$(cat /tmp/runners-devspace.pid)" || true
-          fi
-          if command -v devspace >/dev/null 2>&1; then
-            devspace run-pipeline restore-argocd
-          else
-            echo "DevSpace is not installed; skipping ArgoCD sync restore."
+          if command -v agyn >/dev/null 2>&1; then
+            agyn local stop
           fi
