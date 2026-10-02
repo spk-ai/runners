@@ -28,6 +28,8 @@ functions:
             runAsUser: 1000
             fsGroup: 1000
           initContainers: []
+          # rpcauth reviews caller tokens with the pod's own ServiceAccount.
+          automountServiceAccountToken: true
           volumes:
             - name: data
               emptyDir: {}
@@ -49,7 +51,8 @@ functions:
                     || [ ! -f /opt/app/data/internal/config/config.go ] \
                     || [ ! -f /opt/app/data/internal/db/migrate.go ] \
                     || [ ! -f /opt/app/data/internal/server/server.go ] \
-                    || [ ! -f /opt/app/data/internal/zitimanager/manager.go ]; do
+                    || [ ! -f /opt/app/data/internal/zitimanager/manager.go ] \
+                    || [ ! -f /opt/app/data/.github/e2e/rpcauth/policy.json ]; do
                     sleep 1
                     elapsed=$(( $(date +%s) - start ))
                     [ "$elapsed" -ge 300 ] && { echo "ERROR: sync timeout waiting for source files" >&2; exit 1; }
@@ -59,6 +62,13 @@ functions:
                   buf generate --include-imports
                   echo "buf generate complete, verifying runners package..."
                   go list ./cmd/runners
+                  # DevSpace runs beside platform callers that send no caller
+                  # token, so it defaults to permissive caller authorization
+                  # with the E2E policy. Set RUNNERS_RPC_AUTH_MODE=enforce on
+                  # the Deployment to enforce (the E2E does after its suite).
+                  printenv RUNNERS_RPC_AUTH_MODE >/dev/null || export RUNNERS_RPC_AUTH_MODE=permissive
+                  printenv RUNNERS_RPC_POLICY >/dev/null || printenv RUNNERS_RPC_POLICY_FILE >/dev/null \
+                    || export RUNNERS_RPC_POLICY_FILE=/opt/app/data/.github/e2e/rpcauth/policy.json
                   echo "buf generate complete, starting go run..."
                   exec go run ./cmd/runners
               volumeMounts:

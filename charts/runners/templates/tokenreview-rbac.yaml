@@ -1,0 +1,30 @@
+{{- if .Values.rpcAuth.tokenReviewRBAC.create }}
+{{- $name := printf "%s-%s-tokenreview" .Release.Namespace (include "service-base.fullname" .) | trunc 63 | trimSuffix "-" }}
+# TokenReview is cluster-scoped. This grants only token validation: runners
+# cannot read Secrets or create objects with it.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "service-base.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "service-base.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "service-base.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $name }}
+{{- end }}

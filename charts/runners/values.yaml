@@ -25,27 +25,68 @@ serviceAccount:
 
 automountServiceAccountToken: true
 
-authorizationPolicy:
-  enabled: true
-  orchestratorServiceAccount:
-    name: agents-orchestrator
-    namespace: ""
-  identityServiceAccounts:
-    - name: gateway
+# Caller authorization for the control-plane gRPC API (internal/rpcauth).
+# Callers send an audience-bound projected ServiceAccount token in the
+# x-agyn-caller-token metadata key; runners validates it with a TokenReview
+# and applies these grants. Method classes are fixed in code
+# (internal/rpcauth/classification.json); only who may call them is configured.
+rpcAuth:
+  # enforce rejects every call the policy does not allow. permissive only logs
+  # decisions; it exists for callers that cannot send tokens yet and must not
+  # be used in production.
+  mode: enforce
+  # Dedicated token audience; callers project tokens for exactly this value.
+  audience: agyn-runners
+  # Reuse of a successful TokenReview, 1-60s. It bounds how long a token from a
+  # deleted pod stays accepted.
+  cacheTTLSeconds: 30
+  # One entry per caller ServiceAccount. An empty namespace means the release
+  # namespace. Classes: orchestrator, identity, internal, runnerToken (denied
+  # can never be granted). identity and internal grants state whether
+  # x-identity-id is required; methods narrows a grant to part of its class.
+  callers:
+    - serviceAccount: agents-orchestrator
       namespace: ""
-    - name: expose
+      grants:
+        - class: orchestrator
+        - class: identity
+          identity: optional
+          methods:
+            - GetRunner
+            - ListRunners
+            - ListFlavors
+            - GetWorkload
+            - ListWorkloadsByThread
+            - ListWorkloadsByAgentInstance
+            - GetVolume
+            - ListVolumes
+            - ListVolumesByThread
+            - ListVolumesByAgentInstance
+        - class: internal
+          identity: optional
+          methods:
+            - ListWorkloads
+    - serviceAccount: gateway
       namespace: ""
-    - name: notifications
-      namespace: ""
-    - name: chat
-      namespace: ""
-  # Terminal Proxy calls GetWorkload and TouchWorkload internally with no
-  # forwarded identity, after validating its own terminal ticket. It is allowed
-  # on those two paths only; every other gateway path still requires an identity
-  # from it. Set name to "" to drop the exemption entirely.
-  terminalProxyServiceAccount:
-    name: terminal-proxy
-    namespace: ""
+      grants:
+        - class: identity
+          identity: required
+        - class: internal
+          identity: required
+        - class: runnerToken
+  # Reads opened to callers that send no token (unforked chat, expose,
+  # notifications). Only GetWorkload, ListWorkloadsByThread and
+  # ListWorkloadsByAgentInstance are eligible. Nothing authenticates such a
+  # caller: anything that can reach the gRPC port may make these calls with any
+  # claimed identity. Keep it empty unless a feature needs it, for example
+  #   - method: ListWorkloadsByThread
+  #     identity: required
+  tokenless: []
+  # ClusterRole/ClusterRoleBinding granting only create on
+  # tokenreviews.authentication.k8s.io to this ServiceAccount. Disable when the
+  # cluster owner manages that binding separately.
+  tokenReviewRBAC:
+    create: true
 
 rbac:
   create: false

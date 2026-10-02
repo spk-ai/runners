@@ -1,0 +1,19 @@
+[
+  {"name": "health needs no token", "method": "HealthCheck", "expect": "serving"},
+  {"name": "identity read", "method": "GetWorkload", "tokenFile": "/var/run/secrets/agyn.io/runners-token/token", "identities": ["7f2d9b8e-3a51-4c8e-9d0b-5e6f7a8b9c0d"], "expect": "allowed"},
+  {"name": "identity read without identity", "method": "GetWorkload", "tokenFile": "/var/run/secrets/agyn.io/runners-token/token", "expect": "PermissionDenied"},
+  {"name": "identity read with two identities", "method": "GetWorkload", "tokenFile": "/var/run/secrets/agyn.io/runners-token/token", "identities": ["7f2d9b8e-3a51-4c8e-9d0b-5e6f7a8b9c0d", "1b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b"], "expect": "PermissionDenied"},
+  {"name": "log stream with identity", "method": "StreamWorkloadLogs", "tokenFile": "/var/run/secrets/agyn.io/runners-token/token", "identities": ["7f2d9b8e-3a51-4c8e-9d0b-5e6f7a8b9c0d"], "stream": true, "expect": "allowed"},
+  {"name": "log stream without identity", "method": "StreamWorkloadLogs", "tokenFile": "/var/run/secrets/agyn.io/runners-token/token", "stream": true, "expect": "PermissionDenied"},
+  {"name": "log stream without token", "method": "StreamWorkloadLogs", "identities": ["7f2d9b8e-3a51-4c8e-9d0b-5e6f7a8b9c0d"], "stream": true, "expect": "Unauthenticated"},
+  {"name": "internal keepalive with identity", "method": "TouchWorkload", "tokenFile": "/var/run/secrets/agyn.io/runners-token/token", "identities": ["7f2d9b8e-3a51-4c8e-9d0b-5e6f7a8b9c0d"], "expect": "allowed"},
+  {"name": "lifecycle mutation is orchestrator-only", "method": "CreateWorkload", "tokenFile": "/var/run/secrets/agyn.io/runners-token/token", "identities": ["7f2d9b8e-3a51-4c8e-9d0b-5e6f7a8b9c0d"], "expect": "PermissionDenied"},
+  {"name": "runner-token class", "method": "EnrollRunner", "tokenFile": "/var/run/secrets/agyn.io/runners-token/token", "expect": "allowed"},
+  {"name": "runner-token report", "method": "ReportWorkloadState", "tokenFile": "/var/run/secrets/agyn.io/runners-token/token", "expect": "allowed"},
+  {"name": "denied class", "method": "CreateFlavor", "tokenFile": "/var/run/secrets/agyn.io/runners-token/token", "identities": ["7f2d9b8e-3a51-4c8e-9d0b-5e6f7a8b9c0d"], "expect": "PermissionDenied"},
+  {"name": "tokenless allowlisted read", "method": "ListWorkloadsByThread", "identities": ["7f2d9b8e-3a51-4c8e-9d0b-5e6f7a8b9c0d"], "expect": "allowed"},
+  {"name": "tokenless allowlisted read without identity", "method": "ListWorkloadsByThread", "expect": "PermissionDenied"},
+  {"name": "tokenless read not allowlisted", "method": "GetWorkload", "identities": ["7f2d9b8e-3a51-4c8e-9d0b-5e6f7a8b9c0d"], "expect": "Unauthenticated"},
+  {"name": "tokenless runner lifecycle", "method": "RegisterRunner", "identities": ["7f2d9b8e-3a51-4c8e-9d0b-5e6f7a8b9c0d"], "expect": "Unauthenticated"},
+  {"name": "wrong audience", "method": "GetWorkload", "tokenFile": "/var/run/secrets/agyn.io/other-audience-token/token", "identities": ["7f2d9b8e-3a51-4c8e-9d0b-5e6f7a8b9c0d"], "expect": "Unauthenticated"}
+]

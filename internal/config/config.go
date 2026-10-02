@@ -2,9 +2,12 @@ package config
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/agynio/runners/internal/rpcauth"
 )
 
 const (
@@ -31,7 +34,12 @@ type Config struct {
 	WorkloadActivitySweepInterval time.Duration
 	WorkloadKeepaliveGrace        time.Duration
 	GRPCAddr                      string
+	// RPCAuth configures caller authorization; see rpcauth.Config.
+	RPCAuth rpcauth.Config
 }
+
+// maxRPCPolicyBytes bounds RUNNERS_RPC_POLICY_FILE before parsing.
+const maxRPCPolicyBytes = 64 * 1024
 
 // Load reads configuration from environment variables, applying defaults when
 // values are not provided. Returns an error when supplied values are invalid.
@@ -105,6 +113,58 @@ func Load() (Config, error) {
 	}
 	cfg.GRPCAddr = readEnv("GRPC_ADDR", defaultGRPCAddr)
 
+	rpcAuth, err := loadRPCAuth()
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.RPCAuth = rpcAuth
+
+	return cfg, nil
+}
+
+// loadRPCAuth reads the caller-authorization settings. Enforcement is the
+// default; permissive mode must be requested explicitly. Policy validation
+// happens in rpcauth.Setup, before any other startup side effect.
+func loadRPCAuth() (rpcauth.Config, error) {
+	mode, err := rpcauth.ParseMode(os.Getenv("RUNNERS_RPC_AUTH_MODE"))
+	if err != nil {
+		return rpcauth.Config{}, fmt.Errorf("RUNNERS_RPC_AUTH_MODE: %w", err)
+	}
+	cfg := rpcauth.Config{Mode: mode, ReviewTimeout: rpcauth.DefaultReviewTimeout}
+
+	inline := strings.TrimSpace(os.Getenv("RUNNERS_RPC_POLICY"))
+	path := strings.TrimSpace(os.Getenv("RUNNERS_RPC_POLICY_FILE"))
+	switch {
+	case inline != "" && path != "":
+		return rpcauth.Config{}, fmt.Errorf("set only one of RUNNERS_RPC_POLICY and RUNNERS_RPC_POLICY_FILE")
+	case inline != "":
+		cfg.Policy = []byte(inline)
+	case path != "":
+		file, err := os.Open(path)
+		if err != nil {
+			return rpcauth.Config{}, fmt.Errorf("open RUNNERS_RPC_POLICY_FILE: %w", err)
+		}
+		defer file.Close()
+		data, err := io.ReadAll(io.LimitReader(file, maxRPCPolicyBytes+1))
+		if err != nil {
+			return rpcauth.Config{}, fmt.Errorf("read RUNNERS_RPC_POLICY_FILE: %w", err)
+		}
+		if len(data) > maxRPCPolicyBytes {
+			return rpcauth.Config{}, fmt.Errorf("RUNNERS_RPC_POLICY_FILE exceeds %d bytes", maxRPCPolicyBytes)
+		}
+		cfg.Policy = data
+	}
+
+	if timeout := strings.TrimSpace(os.Getenv("RUNNERS_TOKENREVIEW_TIMEOUT")); timeout != "" {
+		parsed, err := time.ParseDuration(timeout)
+		if err != nil {
+			return rpcauth.Config{}, fmt.Errorf("parse RUNNERS_TOKENREVIEW_TIMEOUT: %w", err)
+		}
+		if parsed <= 0 || parsed > 30*time.Second {
+			return rpcauth.Config{}, fmt.Errorf("RUNNERS_TOKENREVIEW_TIMEOUT must be in (0, 30s]")
+		}
+		cfg.ReviewTimeout = parsed
+	}
 	return cfg, nil
 }
 

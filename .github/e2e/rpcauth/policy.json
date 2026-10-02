@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "audience": "agyn-runners",
+  "cacheTTLSeconds": 5,
+  "callers": [
+    {
+      "namespace": "agyn-platform",
+      "serviceAccount": "agents-orchestrator",
+      "grants": [
+        {"class": "orchestrator"},
+        {"class": "identity", "identity": "optional", "methods": [
+          "GetRunner", "ListRunners", "ListFlavors", "GetWorkload", "ListWorkloadsByThread",
+          "ListWorkloadsByAgentInstance", "GetVolume", "ListVolumes", "ListVolumesByThread",
+          "ListVolumesByAgentInstance"
+        ]},
+        {"class": "internal", "identity": "optional", "methods": ["ListWorkloads"]}
+      ]
+    },
+    {
+      "namespace": "agyn-platform",
+      "serviceAccount": "gateway",
+      "grants": [
+        {"class": "identity", "identity": "required"},
+        {"class": "internal", "identity": "required"},
+        {"class": "runnerToken"}
+      ]
+    }
+  ],
+  "tokenless": [{"method": "ListWorkloadsByThread", "identity": "required"}]
+}
