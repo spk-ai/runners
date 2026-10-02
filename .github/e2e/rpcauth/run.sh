@@ -28,7 +28,7 @@ if [ "${#endpoint_ips[@]}" -ne 1 ]; then
   exit 1
 fi
 pod_ip="${endpoint_ips[0]}"
-kubectl -n "$ns" get pods -o wide --field-selector="status.podIP=${pod_ip}"
+kubectl -n "$ns" get pods -o wide --field-selector="status.podIP=${pod_ip}" || true
 targets="runners.${ns}.svc.cluster.local:50051,${pod_ip}:50051"
 echo "Probing ${targets}"
 

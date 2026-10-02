@@ -94,8 +94,15 @@ jobs:
           set -euo pipefail
           kill "$(cat /tmp/runners-devspace.pid)" 2>/dev/null || true
           sleep 2
+          old_pods="$(kubectl -n agyn-platform get pods -l app.kubernetes.io/name=runners -o name)"
           kubectl -n agyn-platform set env deployment/runners RUNNERS_RPC_AUTH_MODE=enforce
           kubectl -n agyn-platform rollout status deployment/runners --timeout=300s
+          # rollout status returns while the old source pod still terminates;
+          # the readiness wait below must not select it.
+          if [ -n "$old_pods" ]; then
+            # shellcheck disable=SC2086 # one argument per pod name
+            kubectl -n agyn-platform wait --for=delete $old_pods --timeout=180s
+          fi
           RUNNER_TRACKING_ID="" devspace dev --watch > /tmp/runners-devspace-enforce.log 2>&1 &
           echo "$!" > /tmp/runners-devspace.pid
           devspace run-pipeline wait-runners
