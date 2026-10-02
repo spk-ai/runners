@@ -21,12 +21,14 @@ kubectl apply -f "$dir/probes.yaml"
 kubectl -n "$ns" wait pod -l app.kubernetes.io/managed-by=rpcauth-e2e \
   --for=condition=Ready --timeout=300s
 
-pod_ip="$(kubectl -n "$ns" get pod -l app.kubernetes.io/name=runners \
-  --field-selector=status.phase=Running -o jsonpath='{.items[0].status.podIP}')"
-if [ -z "$pod_ip" ]; then
-  echo "::error::runners pod IP not found" >&2
+# The Pod IP behind the Service, so both targets reach the same source pod.
+read -r -a endpoint_ips <<< "$(kubectl -n "$ns" get endpoints runners -o jsonpath='{.subsets[*].addresses[*].ip}')"
+if [ "${#endpoint_ips[@]}" -ne 1 ]; then
+  echo "::error::expected exactly one runners endpoint, got: ${endpoint_ips[*]:-none}" >&2
   exit 1
 fi
+pod_ip="${endpoint_ips[0]}"
+kubectl -n "$ns" get pods -o wide --field-selector="status.podIP=${pod_ip}"
 targets="runners.${ns}.svc.cluster.local:50051,${pod_ip}:50051"
 echo "Probing ${targets}"
 
