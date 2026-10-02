@@ -18,6 +18,7 @@ import (
 	zitimanagementv1 "github.com/agynio/runners/.gen/go/agynio/api/ziti_management/v1"
 	"github.com/agynio/runners/internal/config"
 	"github.com/agynio/runners/internal/db"
+	"github.com/agynio/runners/internal/rpcauth"
 	"github.com/agynio/runners/internal/server"
 	"github.com/agynio/runners/internal/zitimanager"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -41,6 +42,22 @@ func run() error {
 	if err != nil {
 		return err
 	}
+
+	// Caller authorization is validated before any side effect: a missing
+	// policy or TokenReview RBAC must not cost a migration run or a fresh
+	// ephemeral Ziti identity on every crash-looping restart.
+	authorizer, err := rpcauth.Setup(ctx, cfg.RPCAuth, nil)
+	if err != nil {
+		return err
+	}
+	// The same registration with stub handlers proves every method is
+	// classified before anything else starts; the real server repeats it.
+	probe, err := newGRPCServer(authorizer, runnersv1.UnimplementedRunnersServiceServer{}, health.NewServer())
+	if err != nil {
+		return err
+	}
+	probe.Stop()
+	log.Printf("runners: rpc caller authorization mode %s", authorizer.Mode())
 
 	poolCfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
 	if err != nil {
@@ -102,7 +119,6 @@ func run() error {
 	}
 	defer notificationsConn.Close()
 
-	grpcServer := grpc.NewServer()
 	srv := server.New(server.Options{
 		Pool:                 pool,
 		IdentityClient:       identityv1.NewIdentityServiceClient(identityConn),
@@ -112,10 +128,12 @@ func run() error {
 		NotificationsClient:  notificationsv1.NewNotificationsServiceClient(notificationsConn),
 		ZitiDialer:           zitiManager,
 	})
-	runnersv1.RegisterRunnersServiceServer(grpcServer, srv)
 	healthServer := health.NewServer()
-	healthpb.RegisterHealthServer(grpcServer, healthServer)
 	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	grpcServer, err := newGRPCServer(authorizer, srv, healthServer)
+	if err != nil {
+		return err
+	}
 	go srv.RunWorkloadActivitySweep(ctx, cfg.WorkloadActivitySweepInterval, cfg.WorkloadKeepaliveGrace)
 
 	listener, err := net.Listen("tcp", cfg.GRPCAddr)

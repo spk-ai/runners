@@ -1,0 +1,230 @@
+# Disposable-VM probe pods. Each holds kubelet-projected tokens like a real
+# caller: one for the runners audience, one for another audience and one for
+# the API server's default audience. They run the rpcauthprobe binary that
+# run.sh copies in; the image is the dev image runners already uses here.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rpcauth-intruder
+  namespace: agyn-platform
+  labels:
+    app.kubernetes.io/managed-by: rpcauth-e2e
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rpcauth-orchestrator
+  namespace: agyn-platform
+  labels:
+    app.kubernetes.io/managed-by: rpcauth-e2e
+    rpcauth-e2e/probe: orchestrator
+spec:
+  serviceAccountName: agents-orchestrator
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 1
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: ghcr.io/agynio/devcontainer-go:1
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "3600"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+      volumeMounts:
+        - name: bin
+          mountPath: /probe
+        - name: runners-token
+          mountPath: /var/run/secrets/agyn.io/runners-token
+          readOnly: true
+        - name: other-audience-token
+          mountPath: /var/run/secrets/agyn.io/other-audience-token
+          readOnly: true
+        - name: api-token
+          mountPath: /var/run/secrets/agyn.io/api-token
+          readOnly: true
+  volumes:
+    - name: bin
+      emptyDir:
+        sizeLimit: 64Mi
+    - name: runners-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              audience: agyn-runners
+              expirationSeconds: 600
+              path: token
+    - name: other-audience-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              audience: not-agyn-runners
+              expirationSeconds: 600
+              path: token
+    - name: api-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              expirationSeconds: 600
+              path: token
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rpcauth-gateway
+  namespace: agyn-platform
+  labels:
+    app.kubernetes.io/managed-by: rpcauth-e2e
+    rpcauth-e2e/probe: gateway
+spec:
+  serviceAccountName: gateway
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 1
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: ghcr.io/agynio/devcontainer-go:1
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "3600"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+      volumeMounts:
+        - name: bin
+          mountPath: /probe
+        - name: runners-token
+          mountPath: /var/run/secrets/agyn.io/runners-token
+          readOnly: true
+        - name: other-audience-token
+          mountPath: /var/run/secrets/agyn.io/other-audience-token
+          readOnly: true
+        - name: api-token
+          mountPath: /var/run/secrets/agyn.io/api-token
+          readOnly: true
+  volumes:
+    - name: bin
+      emptyDir:
+        sizeLimit: 64Mi
+    - name: runners-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              audience: agyn-runners
+              expirationSeconds: 600
+              path: token
+    - name: other-audience-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              audience: not-agyn-runners
+              expirationSeconds: 600
+              path: token
+    - name: api-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              expirationSeconds: 600
+              path: token
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rpcauth-intruder
+  namespace: agyn-platform
+  labels:
+    app.kubernetes.io/managed-by: rpcauth-e2e
+    rpcauth-e2e/probe: intruder
+spec:
+  serviceAccountName: rpcauth-intruder
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 1
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: ghcr.io/agynio/devcontainer-go:1
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "3600"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+      volumeMounts:
+        - name: bin
+          mountPath: /probe
+        - name: runners-token
+          mountPath: /var/run/secrets/agyn.io/runners-token
+          readOnly: true
+        - name: other-audience-token
+          mountPath: /var/run/secrets/agyn.io/other-audience-token
+          readOnly: true
+        - name: api-token
+          mountPath: /var/run/secrets/agyn.io/api-token
+          readOnly: true
+  volumes:
+    - name: bin
+      emptyDir:
+        sizeLimit: 64Mi
+    - name: runners-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              audience: agyn-runners
+              expirationSeconds: 600
+              path: token
+    - name: other-audience-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              audience: not-agyn-runners
+              expirationSeconds: 600
+              path: token
+    - name: api-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              expirationSeconds: 600
+              path: token

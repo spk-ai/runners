@@ -1,0 +1,4 @@
+[
+  {"name": "health still serves", "method": "HealthCheck", "expect": "serving"},
+  {"name": "review unavailable fails closed", "method": "CreateWorkload", "tokenFile": "/var/run/secrets/agyn.io/runners-token/token", "expect": "Unavailable"}
+]

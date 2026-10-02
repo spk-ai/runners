@@ -1,0 +1,17 @@
+[
+  {"name": "health needs no token", "method": "HealthCheck", "expect": "serving"},
+  {"name": "lifecycle mutation", "method": "CreateWorkload", "tokenFile": "/var/run/secrets/agyn.io/runners-token/token", "expect": "allowed"},
+  {"name": "internal read", "method": "ListWorkloads", "tokenFile": "/var/run/secrets/agyn.io/runners-token/token", "expect": "allowed"},
+  {"name": "unscoped workload read", "method": "GetWorkload", "tokenFile": "/var/run/secrets/agyn.io/runners-token/token", "expect": "allowed"},
+  {"name": "runner registration is not granted", "method": "RegisterRunner", "tokenFile": "/var/run/secrets/agyn.io/runners-token/token", "identities": ["7f2d9b8e-3a51-4c8e-9d0b-5e6f7a8b9c0d"], "expect": "PermissionDenied"},
+  {"name": "runner-token class is not granted", "method": "EnrollRunner", "tokenFile": "/var/run/secrets/agyn.io/runners-token/token", "expect": "PermissionDenied"},
+  {"name": "keepalive is not granted", "method": "TouchWorkload", "tokenFile": "/var/run/secrets/agyn.io/runners-token/token", "expect": "PermissionDenied"},
+  {"name": "log stream is not granted", "method": "StreamWorkloadLogs", "tokenFile": "/var/run/secrets/agyn.io/runners-token/token", "identities": ["7f2d9b8e-3a51-4c8e-9d0b-5e6f7a8b9c0d"], "stream": true, "expect": "PermissionDenied"},
+  {"name": "denied class", "method": "ValidateServiceToken", "tokenFile": "/var/run/secrets/agyn.io/runners-token/token", "expect": "PermissionDenied"},
+  {"name": "denied org teardown", "method": "DeleteOrganizationResources", "tokenFile": "/var/run/secrets/agyn.io/runners-token/token", "expect": "PermissionDenied"},
+  {"name": "no token", "method": "CreateWorkload", "expect": "Unauthenticated"},
+  {"name": "wrong audience", "method": "CreateWorkload", "tokenFile": "/var/run/secrets/agyn.io/other-audience-token/token", "expect": "Unauthenticated"},
+  {"name": "api-server audience", "method": "CreateWorkload", "tokenFile": "/var/run/secrets/agyn.io/api-token/token", "expect": "Unauthenticated"},
+  {"name": "unknown method", "method": "NoSuchMethod", "tokenFile": "/var/run/secrets/agyn.io/runners-token/token", "expect": "Unimplemented"},
+  {"name": "reflection is not registered", "method": "/grpc.reflection.v1.ServerReflection/ServerReflectionInfo", "tokenFile": "/var/run/secrets/agyn.io/runners-token/token", "stream": true, "expect": "Unimplemented"}
+]

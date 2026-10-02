@@ -28,6 +28,8 @@ functions:
             runAsUser: 1000
             fsGroup: 1000
           initContainers: []
+          # rpcauth reviews caller tokens with the pod's own ServiceAccount.
+          automountServiceAccountToken: true
           volumes:
             - name: data
               emptyDir: {}
@@ -49,7 +51,8 @@ functions:
                     || [ ! -f /opt/app/data/internal/config/config.go ] \
                     || [ ! -f /opt/app/data/internal/db/migrate.go ] \
                     || [ ! -f /opt/app/data/internal/server/server.go ] \
-                    || [ ! -f /opt/app/data/internal/zitimanager/manager.go ]; do
+                    || [ ! -f /opt/app/data/internal/zitimanager/manager.go ] \
+                    || [ ! -f /opt/app/data/.github/e2e/rpcauth/policy.json ]; do
                     sleep 1
                     elapsed=$(( $(date +%s) - start ))
                     [ "$elapsed" -ge 300 ] && { echo "ERROR: sync timeout waiting for source files" >&2; exit 1; }
@@ -59,6 +62,13 @@ functions:
                   buf generate --include-imports
                   echo "buf generate complete, verifying runners package..."
                   go list ./cmd/runners
+                  # DevSpace runs beside platform callers that send no caller
+                  # token, so it defaults to permissive caller authorization
+                  # with the E2E policy. Set RUNNERS_RPC_AUTH_MODE=enforce on
+                  # the Deployment to enforce (the E2E does after its suite).
+                  printenv RUNNERS_RPC_AUTH_MODE >/dev/null || export RUNNERS_RPC_AUTH_MODE=permissive
+                  printenv RUNNERS_RPC_POLICY >/dev/null || printenv RUNNERS_RPC_POLICY_FILE >/dev/null \
+                    || export RUNNERS_RPC_POLICY_FILE=/opt/app/data/.github/e2e/rpcauth/policy.json
                   echo "buf generate complete, starting go run..."
                   exec go run ./cmd/runners
               volumeMounts:
@@ -151,10 +161,15 @@ functions:
 
     echo "Waiting for runners source sync and process start..."
     ELAPSED=0
-    until kubectl logs -n ${RUNNERS_NAMESPACE} -l "${LABEL_SELECTOR}" --tail=200 2>/dev/null | \
-      grep -q "buf generate complete, starting go run" && \
-      kubectl logs -n ${RUNNERS_NAMESPACE} -l "${LABEL_SELECTOR}" --tail=200 2>/dev/null | \
-      grep -q "runners: ready"; do
+    # Only source pods count: a released runners pod that is still around
+    # also logs "runners: ready", which let this gate pass before the source
+    # build was listening.
+    until DEV_LOGS="$(for pod in $(kubectl get pods -n ${RUNNERS_NAMESPACE} -l "${LABEL_SELECTOR}" \
+        -o jsonpath='{range .items[?(@.spec.containers[0].image=="ghcr.io/agynio/devcontainer-go:1")]}{.metadata.name}{" "}{end}' 2>/dev/null); do
+        kubectl logs -n ${RUNNERS_NAMESPACE} "$pod" --tail=400 2>/dev/null || true
+      done)" && \
+      printf '%s\n' "$DEV_LOGS" | grep -q "buf generate complete, starting go run" && \
+      printf '%s\n' "$DEV_LOGS" | grep -q "runners: ready"; do
       sleep 5
       ELAPSED=$((ELAPSED + 5))
       if [ "$ELAPSED" -ge 600 ]; then
@@ -220,7 +235,10 @@ functions:
         kubectl logs -n ${RUNNERS_NAMESPACE} -l "${LABEL_SELECTOR}" --tail=200 >&2 || true
         exit 1
       fi
-      echo "  still waiting for TCP port 50051... (${ELAPSED}s)"
+      # A port-forward that dies at once must not turn this into a busy
+      # loop of kubectl processes.
+      sleep 2
+      echo "  still waiting for TCP port 50051... ($(( $(date +%s) - DEADLINE + 900 ))s)"
     done
 
     echo "Waiting for runners gRPC health endpoint on port 50051..."
@@ -262,6 +280,7 @@ functions:
         kubectl logs -n ${RUNNERS_NAMESPACE} -l "${LABEL_SELECTOR}" --tail=200 >&2 || true
         exit 1
       fi
+      sleep 2
       echo "  still waiting for gRPC health... (${ELAPSED}s)"
     done
     echo "Runners is running from source."

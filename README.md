@@ -7,6 +7,20 @@ See [AGENTS.md](AGENTS.md) for source owners and contribution rules, and
 
 See [preparation revocation](PREPARATION-REVOCATION.md) for recovery rollout limits.
 
+## Caller Authorization
+
+Every control-plane RPC passes the [rpcauth](internal/rpcauth/interceptor.go)
+unary and stream interceptors. Callers send an audience-bound projected
+ServiceAccount token in `x-agyn-caller-token`; runners validates it with a
+TokenReview and applies the deployment's grants to the method's class
+([classification](internal/rpcauth/classification.json), pinned to the API).
+Configuration is `RUNNERS_RPC_AUTH_MODE` (`enforce` by default, `permissive`
+only logs), `RUNNERS_RPC_POLICY` or `RUNNERS_RPC_POLICY_FILE` (the
+[Policy](internal/rpcauth/policy.go) document) and `RUNNERS_TOKENREVIEW_TIMEOUT`.
+The ServiceAccount needs `create` on `tokenreviews.authentication.k8s.io`; the
+chart's `rpcAuth` values render all of this. Enforcement starts only after every
+caller sends tokens, and a NetworkPolicy must still limit who reaches the port.
+
 ## Explicit Workload Removal Confirmation
 
 Billing versus physical-removal semantics live beside `updateWorkload` in

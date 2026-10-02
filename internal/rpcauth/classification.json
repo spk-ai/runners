@@ -1,0 +1,20 @@
+{
+  "apiRevision": "ce64da8680c39a13f7174c3146b38f3bfcc03037",
+  "orchestrator": [
+    "CreateWorkload", "CreatePreparedWorkload", "UpdatePreparedWorkload",
+    "CreateAnchoredWorkload", "BindWorkloadResourceAnchors", "UpdateAnchoredWorkload",
+    "UpdateWorkload", "UpdateWorkloadStatus", "DeleteWorkload", "BatchUpdateWorkloadSampledAt",
+    "CreateVolume", "UpdateVolume", "CreateVolumeChecked", "UpdateVolumeChecked",
+    "BeginVolumeAnchorMigration", "GetVolumeAnchorMigration", "AdvanceVolumeAnchorMigration",
+    "BatchUpdateVolumeSampledAt"
+  ],
+  "identity": [
+    "RegisterRunner", "GetRunner", "ListRunners", "UpdateRunner", "DeleteRunner",
+    "ListFlavors", "ListStorageClasses", "GetWorkload", "ListWorkloadsByThread",
+    "ListWorkloadsByAgentInstance", "StreamWorkloadLogs", "GetVolume", "ListVolumes",
+    "ListVolumesByThread", "ListVolumesByAgentInstance"
+  ],
+  "internal": ["ListWorkloads", "TouchWorkload"],
+  "runnerToken": ["EnrollRunner", "ReportRunnerCatalog", "ReportWorkloadState"],
+  "denied": ["ValidateServiceToken", "CreateFlavor", "GetFlavor", "UpdateFlavor", "DeleteFlavor", "DeleteOrganizationResources"]
+}

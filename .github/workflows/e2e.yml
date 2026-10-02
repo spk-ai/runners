@@ -49,6 +49,21 @@ jobs:
           sudo install -c -m 0755 /tmp/grpc_health_probe /usr/local/bin/grpc_health_probe
           grpc_health_probe -version
 
+      # rpcauth validates caller tokens with TokenReview. Bind exactly that
+      # permission to the VM runners ServiceAccount before runners starts.
+      - name: Grant runners TokenReview
+        run: |
+          set -euo pipefail
+          sa="$(kubectl -n agyn-platform get deployment runners -o jsonpath='{.spec.template.spec.serviceAccountName}')"
+          sa="${sa:-default}"
+          echo "RUNNERS_SA=${sa}" >> "$GITHUB_ENV"
+          kubectl create clusterrole rpcauth-e2e-tokenreview --verb=create --resource=tokenreviews.authentication.k8s.io
+          kubectl create clusterrolebinding rpcauth-e2e-tokenreview --clusterrole=rpcauth-e2e-tokenreview \
+            --serviceaccount="agyn-platform:${sa}"
+          kubectl auth can-i create tokenreviews.authentication.k8s.io --as="system:serviceaccount:agyn-platform:${sa}"
+
+      # DevSpace starts runners in permissive caller authorization: the
+      # upstream suite below dials runners directly without caller tokens.
       - name: Deploy runners from source
         run: |
           set -euo pipefail
@@ -62,6 +77,48 @@ jobs:
           e2e-ref: 435b549a937129b6858e7314648eb690894209fe
           service: runners
           include_smoke: "false"
+
+      - name: Set up Go for the authorization probe
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Build the authorization probe
+        run: CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/rpcauthprobe" ./test/rpcauthprobe
+
+      # The same source, now enforcing. The suite above needed permissive mode;
+      # everything below must hold with enforcement on.
+      - name: Restart runners with enforced caller authorization
+        run: |
+          set -euo pipefail
+          kill "$(cat /tmp/runners-devspace.pid)" 2>/dev/null || true
+          sleep 2
+          old_pods="$(kubectl -n agyn-platform get pods -l app.kubernetes.io/name=runners -o name)"
+          kubectl -n agyn-platform set env deployment/runners RUNNERS_RPC_AUTH_MODE=enforce
+          kubectl -n agyn-platform rollout status deployment/runners --timeout=300s
+          # rollout status returns while the old source pod still terminates;
+          # the readiness wait below must not select it.
+          if [ -n "$old_pods" ]; then
+            # shellcheck disable=SC2086 # one argument per pod name
+            kubectl -n agyn-platform wait --for=delete $old_pods --timeout=180s
+          fi
+          RUNNER_TRACKING_ID="" devspace dev --watch > /tmp/runners-devspace-enforce.log 2>&1 &
+          echo "$!" > /tmp/runners-devspace.pid
+          devspace run-pipeline wait-runners
+          kubectl -n agyn-platform logs -l app.kubernetes.io/name=runners --tail=400 \
+            | grep -F 'runners: rpc caller authorization mode enforce'
+
+      - name: Probe caller authorization through the Service and Pod IP
+        run: bash .github/e2e/rpcauth/run.sh "$RUNNER_TEMP/rpcauthprobe" rpcauth-e2e-tokenreview "$RUNNERS_SA"
+
+      - name: Collect authorization diagnostics
+        if: failure()
+        run: |
+          kubectl -n agyn-platform get pods -o wide || true
+          kubectl -n agyn-platform logs -l app.kubernetes.io/name=runners --tail=300 || true
+          tail -n 200 /tmp/runners-devspace-enforce.log || true
+          kubectl -n agyn-platform describe pods -l app.kubernetes.io/managed-by=rpcauth-e2e || true
 
       # Provisioning uses a disposable Helm-owned VM, with no ArgoCD apps.
       - name: Stop disposable platform VM

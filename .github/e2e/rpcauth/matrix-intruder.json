@@ -1,0 +1,6 @@
+[
+  {"name": "health needs no token", "method": "HealthCheck", "expect": "serving"},
+  {"name": "unknown service account read", "method": "GetWorkload", "tokenFile": "/var/run/secrets/agyn.io/runners-token/token", "identities": ["7f2d9b8e-3a51-4c8e-9d0b-5e6f7a8b9c0d"], "expect": "PermissionDenied"},
+  {"name": "unknown service account lifecycle", "method": "CreateWorkload", "tokenFile": "/var/run/secrets/agyn.io/runners-token/token", "expect": "PermissionDenied"},
+  {"name": "unknown service account runner-token", "method": "EnrollRunner", "tokenFile": "/var/run/secrets/agyn.io/runners-token/token", "expect": "PermissionDenied"}
+]
