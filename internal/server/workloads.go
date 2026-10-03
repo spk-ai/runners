@@ -149,7 +149,16 @@ type containerRecord struct {
 	RestartCount int32      `json:"restart_count"`
 	StartedAt    *time.Time `json:"started_at,omitempty"`
 	FinishedAt   *time.Time `json:"finished_at,omitempty"`
+	OutputTail   *string    `json:"output_tail,omitempty"`
 }
+
+const (
+	// Bounds on Container.output_tail, the orchestrator's redacted failure
+	// evidence. They keep one record well inside a gRPC message; list
+	// responses omit the field entirely (omitContainerOutput).
+	maxContainerOutputTailBytes = 256 * 1024
+	maxWorkloadOutputTailBytes  = 1024 * 1024
+)
 
 func (s *Server) CreateWorkload(ctx context.Context, req *runnersv1.CreateWorkloadRequest) (*runnersv1.CreateWorkloadResponse, error) {
 	return s.createWorkload(ctx, req, nil)
@@ -587,7 +596,7 @@ func (s *Server) ListWorkloadsByThread(ctx context.Context, req *runnersv1.ListW
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "convert workloads: %v", err)
 	}
-	return &runnersv1.ListWorkloadsByThreadResponse{Workloads: protoWorkloads, NextPageToken: nextToken}, nil
+	return &runnersv1.ListWorkloadsByThreadResponse{Workloads: omitContainerOutput(protoWorkloads), NextPageToken: nextToken}, nil
 }
 
 func (s *Server) ListWorkloadsByAgentInstance(ctx context.Context, req *runnersv1.ListWorkloadsByAgentInstanceRequest) (*runnersv1.ListWorkloadsByAgentInstanceResponse, error) {
@@ -629,7 +638,7 @@ func (s *Server) ListWorkloadsByAgentInstance(ctx context.Context, req *runnersv
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "convert workloads: %v", err)
 	}
-	return &runnersv1.ListWorkloadsByAgentInstanceResponse{Workloads: protoWorkloads, NextPageToken: nextToken}, nil
+	return &runnersv1.ListWorkloadsByAgentInstanceResponse{Workloads: omitContainerOutput(protoWorkloads), NextPageToken: nextToken}, nil
 }
 
 func (s *Server) ListWorkloads(ctx context.Context, req *runnersv1.ListWorkloadsRequest) (*runnersv1.ListWorkloadsResponse, error) {
@@ -756,7 +765,7 @@ func (s *Server) ListWorkloads(ctx context.Context, req *runnersv1.ListWorkloads
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "convert workloads: %v", err)
 	}
-	return &runnersv1.ListWorkloadsResponse{Workloads: protoWorkloads, NextPageToken: nextToken}, nil
+	return &runnersv1.ListWorkloadsResponse{Workloads: omitContainerOutput(protoWorkloads), NextPageToken: nextToken}, nil
 }
 
 func (s *Server) BatchUpdateWorkloadSampledAt(ctx context.Context, req *runnersv1.BatchUpdateWorkloadSampledAtRequest) (*runnersv1.BatchUpdateWorkloadSampledAtResponse, error) {
@@ -1757,6 +1766,7 @@ func containersFromProto(containers []*runnersv1.Container) ([]containerRecord, 
 		return []containerRecord{}, nil
 	}
 	records := make([]containerRecord, len(containers))
+	outputTotal := 0
 	for i, container := range containers {
 		if container == nil {
 			return nil, fmt.Errorf("container %d is nil", i)
@@ -1793,6 +1803,18 @@ func containersFromProto(containers []*runnersv1.Container) ([]containerRecord, 
 			value := container.GetExitCode()
 			exitCode = &value
 		}
+		var outputTail *string
+		if container.OutputTail != nil {
+			value := container.GetOutputTail()
+			if len(value) > maxContainerOutputTailBytes {
+				return nil, fmt.Errorf("container %s output_tail exceeds %d bytes", name, maxContainerOutputTailBytes)
+			}
+			outputTotal += len(value)
+			if outputTotal > maxWorkloadOutputTailBytes {
+				return nil, fmt.Errorf("output_tail exceeds %d bytes per workload", maxWorkloadOutputTailBytes)
+			}
+			outputTail = &value
+		}
 		records[i] = containerRecord{
 			ContainerID:  container.GetContainerId(),
 			Name:         name,
@@ -1805,6 +1827,7 @@ func containersFromProto(containers []*runnersv1.Container) ([]containerRecord, 
 			RestartCount: container.GetRestartCount(),
 			StartedAt:    startedAt,
 			FinishedAt:   finishedAt,
+			OutputTail:   outputTail,
 		}
 	}
 	return records, nil
@@ -1836,9 +1859,26 @@ func containersToProto(records []containerRecord) ([]*runnersv1.Container, error
 			RestartCount: record.RestartCount,
 			StartedAt:    timestampProto(record.StartedAt),
 			FinishedAt:   timestampProto(record.FinishedAt),
+			OutputTail:   record.OutputTail,
 		}
 	}
 	return containers, nil
+}
+
+// omitContainerOutput clears Container.output_tail from list responses. The
+// orchestrator reads every tracked record in pages; failure evidence of up to
+// maxWorkloadOutputTailBytes per record would push a page past gRPC message
+// limits. GetWorkload and update responses keep it.
+// @see api::proto/agynio/api/runners/v1/runners
+func omitContainerOutput(workloads []*runnersv1.Workload) []*runnersv1.Workload {
+	for _, workload := range workloads {
+		for _, container := range workload.GetContainers() {
+			if container != nil {
+				container.OutputTail = nil
+			}
+		}
+	}
+	return workloads
 }
 
 func containersEqualByName(existing, updated []containerRecord) bool {
@@ -1873,7 +1913,7 @@ func containerRecordEqual(left, right containerRecord) bool {
 		left.RestartCount != right.RestartCount {
 		return false
 	}
-	if !optionalStringEqual(left.Reason, right.Reason) || !optionalStringEqual(left.Message, right.Message) {
+	if !optionalStringEqual(left.Reason, right.Reason) || !optionalStringEqual(left.Message, right.Message) || !optionalStringEqual(left.OutputTail, right.OutputTail) {
 		return false
 	}
 	if !optionalInt32Equal(left.ExitCode, right.ExitCode) {
